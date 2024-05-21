@@ -43,6 +43,7 @@ func (c *Client) executeCallbacks(dateTimeMap map[string][]dateTimeEntityTrigger
 			c.logger.Debug().
 				Str("entity_id", entityID).
 				Msg("Triggering datetime entity callback function")
+
 			if eventTrigger.timeType == "time" {
 				go eventTrigger.callback()
 			}

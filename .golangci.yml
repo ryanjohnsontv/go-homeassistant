@@ -1,0 +1,59 @@
+run:
+  concurrency: 8
+  issues-exit-code: 2
+  tests: false
+  timeout: 200s
+
+output:
+  formats:
+    - format: colored-line-number
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  fix: true
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gochecknoinits
+
+linters-settings:
+  gocyclo:
+    min-complexity: 10
+  lll:
+    line-length: 120
+
+linters:
+  disable-all: true
+  enable:
+    - bodyclose
+    # - depguard
+    - dogsled
+    - dupl
+    - errcheck
+    - exportloopref
+    - gochecknoinits
+    - gocognit
+    - goconst
+    - gocritic
+    - gocyclo
+    - godox
+    - gofmt
+    - goimports
+    - revive
+    - gosec
+    - gosimple
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - nakedret
+    - prealloc
+    - staticcheck
+    - stylecheck
+    - typecheck
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+    - wsl

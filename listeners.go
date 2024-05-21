@@ -61,7 +61,6 @@ func (c *Client) AddEntityListener(entityID string, f func(*StateChange), opts .
 	}
 
 	filters := &filterOptions{}
-
 	for _, option := range opts {
 		option(filters)
 	}
@@ -72,49 +71,64 @@ func (c *Client) AddEntityListener(entityID string, f func(*StateChange), opts .
 	}
 
 	c.entityListeners[entityID] = append(c.entityListeners[entityID], listener)
-	c.logger.Debug().Str("entity_id", entityID).Msg("Added entity listener")
+	c.logger.Debug().
+		Str("entity_id", entityID).
+		Msg("Added entity listener")
+
 	return nil
 }
 
-func (c *Client) AddEntitiesListener(entityIDs []string, f func(*StateChange), opts ...filterOptions) error {
+func (c *Client) AddEntitiesListener(entityIDs []string, f func(*StateChange), opts ...FilterOption) error {
+	filters := &filterOptions{}
+	for _, option := range opts {
+		option(filters)
+	}
+
 	for _, entityID := range entityIDs {
 		if _, exists := c.States[entityID]; !exists {
-			c.logger.Debug().Str("entity_id", entityID).Msg("Entity ID does not exist")
+			c.logger.Debug().
+				Str("entity_id", entityID).
+				Msg("Entity ID does not exist")
+
 			return fmt.Errorf("entity id does not exist: %s", entityID)
 		}
-		var options filterOptions
-		if len(opts) > 0 {
-			options = opts[0]
-		}
+
 		listener := entityListener{
 			callback:      f,
-			FilterOptions: options,
+			FilterOptions: *filters,
 		}
 
 		c.entityListeners[entityID] = append(c.entityListeners[entityID], listener)
-		c.logger.Debug().Str("entity_id", entityID).Msg("Added entity listener")
+		c.logger.Debug().
+			Str("entity_id", entityID).
+			Msg("Added entity listener")
 	}
+
 	return nil
 }
 
 // Call a function whenever an entity event happens that matches your regex pattern
-func (c *Client) AddRegexEntityListener(regexPattern string, f func(*StateChange), opts ...filterOptions) error {
+func (c *Client) AddRegexEntityListener(regexPattern string, f func(*StateChange), opts ...FilterOption) error {
 	_, err := regexp.Compile(regexPattern)
 	if err != nil {
 		return fmt.Errorf("invalid regex pattern: %v", err)
 	}
 
-	var options filterOptions
-	if len(opts) > 0 {
-		options = opts[0]
+	filters := &filterOptions{}
+	for _, option := range opts {
+		option(filters)
 	}
+
 	listener := entityListener{
 		callback:      f,
-		FilterOptions: options,
+		FilterOptions: *filters,
 	}
 
 	c.entityListeners[regexPattern] = append(c.entityListeners[regexPattern], listener)
-	c.logger.Debug().Str("regex_pattern", regexPattern).Msg("Added regex entity listener")
+	c.logger.Debug().
+		Str("regex_pattern", regexPattern).
+		Msg("Added regex entity listener")
+
 	return nil
 }
 
@@ -136,15 +150,18 @@ func (c *Client) updateState(input []byte) {
 		c.logger.Error().Err(err).Bytes("input", input).Msg("Error decoding state change for update")
 		return
 	}
+
 	if val, exists := c.stateVars[msg.EntityID]; exists {
 		if err := json.Unmarshal(input, val); err != nil {
 			c.logger.Error().Err(err).Bytes("input", input).Msg("Error decoding state change for update")
 			return
 		}
 	}
+
 	c.mu.Lock()
 	c.States[msg.EntityID] = msg.NewState
 	c.mu.Unlock()
+
 	go c.entityIDCallbackTrigger(&msg)
 	go c.regexCallbackTrigger(&msg)
 	go c.checkDateTimeEntity(msg)
@@ -168,25 +185,26 @@ func (c *Client) checkDateTimeEntity(msg StateChange) {
 	if GetEntityDomain(msg.EntityID) != "input_datetime" {
 		return
 	}
-	// var oldTime *time.Time
-	// err := msg.OldState.DecodeStateAndAttributes(&oldTime, nil)
-	// if err != nil {
-	// 	c.logger.Error(fmt.Sprintf("failed to get time state for %s", msg.EntityID), err)
-	// }
-	// if entityFunctions, exists := c.dateTimeEntityListeners[oldState]; exists {
-	// 	if functions, exists := entityFunctions[entityID]; exists {
-	// 		newState := msg.NewState.State.(time.Time)
-	// 		c.mu.Lock()
-	// 		c.dateTimeEntityListeners[newState][entityID] = append(c.dateTimeEntityListeners[newState][entityID], functions...)
-	// 		delete(c.dateTimeEntityListeners[oldState], entityID)
-	// 		c.mu.Unlock()
-	// 	} else {
-	// 		c.mu.Lock()
-	// 		delete(c.dateTimeEntityListeners, oldState)
-	// 		c.mu.Unlock()
-	// 	}
-	// }
 }
+
+// var oldTime *time.Time
+// err := msg.OldState.DecodeStateAndAttributes(&oldTime, nil)
+// if err != nil {
+// 	c.logger.Error(fmt.Sprintf("failed to get time state for %s", msg.EntityID), err)
+// }
+// if entityFunctions, exists := c.dateTimeEntityListeners[oldState]; exists {
+// 	if functions, exists := entityFunctions[entityID]; exists {
+// 		newState := msg.NewState.State.(time.Time)
+// 		c.mu.Lock()
+// 		c.dateTimeEntityListeners[newState][entityID] = append(c.dateTimeEntityListeners[newState][entityID], functions...)
+// 		delete(c.dateTimeEntityListeners[oldState], entityID)
+// 		c.mu.Unlock()
+// 	} else {
+// 		c.mu.Lock()
+// 		delete(c.dateTimeEntityListeners, oldState)
+// 		c.mu.Unlock()
+// 	}
+// }
 
 func (c *Client) matchRegex(pattern string, entityListeners []entityListener, msg *StateChange) {
 	re, _ := regexp.Compile(pattern)
@@ -204,24 +222,30 @@ func (c *Client) triggerCallback(msg *StateChange, el entityListener) {
 	}
 }
 
-func (m *StateChange) shouldTriggerListener(opts filterOptions) bool {
+func (m *StateChange) shouldTriggerListener(opts filterOptions) bool { // nolint:gocyclo
 	if opts.IgnorePreviousNonExistent && m.OldState == nil {
 		return false
 	}
+
 	if opts.IgnorePreviousUnknown && m.OldState.State.unknown {
 		return false
 	}
+
 	if opts.IgnorePreviousUnavail && m.OldState.State.unavailable {
 		return false
 	}
+
 	if opts.IgnoreUnknown && m.NewState.State.unknown {
 		return false
 	}
+
 	if opts.IgnoreUnavailable && m.NewState.State.unavailable {
 		return false
 	}
+
 	if opts.IgnoreCurrentEqualsPrev && m.OldState.State.State == m.NewState.State.State {
 		return false
 	}
+
 	return true
 }

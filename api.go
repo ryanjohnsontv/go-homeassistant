@@ -39,7 +39,9 @@ func (c *Client) sendRequest(req *http.Request, v any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("API is not healthy")
+		c.logger.Error().
+			Msgf("unexpected response code: %d", resp.StatusCode)
+		return ErrUnhealthyAPI
 	}
 
 	if v != nil {
@@ -57,9 +59,10 @@ func (c *Client) APIGetHealth() (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	var message map[string]string
-	err = c.sendRequest(req, &message)
-	if err != nil {
+
+	if err = c.sendRequest(req, &message); err != nil {
 		return "", err
 	}
 
@@ -67,16 +70,16 @@ func (c *Client) APIGetHealth() (string, error) {
 }
 
 // GetConfig gets the Home Assistant configuration.
-func (c *Client) APIGetConfig() (config, error) {
+func (c *Client) APIGetConfig() (HomeAssistantConfig, error) {
 	req, err := c.newGETRequest("config")
 	if err != nil {
-		return config{}, err
+		return HomeAssistantConfig{}, err
 	}
 
-	var resp config
-	err = c.sendRequest(req, &resp)
-	if err != nil {
-		return config{}, err
+	var resp HomeAssistantConfig
+
+	if err = c.sendRequest(req, &resp); err != nil {
+		return HomeAssistantConfig{}, err
 	}
 
 	return resp, nil
@@ -93,30 +96,31 @@ func (c *Client) APIGetEvents() ([]event, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	var events []event
-	err = c.sendRequest(req, &events)
-	if err != nil {
+
+	if err = c.sendRequest(req, &events); err != nil {
 		return nil, err
 	}
 
 	return events, nil
 }
 
-type service struct {
+type Service struct {
 	Domain   string   `json:"domain"`
 	Services []string `json:"services"`
 }
 
 // GetServices gets a list of all services in Home Assistant.
-func (c *Client) APIGetServices() ([]service, error) {
+func (c *Client) APIGetServices() ([]Service, error) {
 	req, err := c.newGETRequest("services")
 	if err != nil {
 		return nil, err
 	}
 
-	var services []service
-	err = c.sendRequest(req, &services)
-	if err != nil {
+	var services []Service
+
+	if err = c.sendRequest(req, &services); err != nil {
 		return nil, err
 	}
 
@@ -189,14 +193,15 @@ func (c *Client) APIGetServices() ([]service, error) {
 // }
 
 // GetStates gets a list of all states in Home Assistant.
-func (c *Client) APIGetStates() ([]stateObj, error) {
+func (c *Client) APIGetStates() ([]State, error) {
 	req, err := c.newGETRequest("states")
 	if err != nil {
 		return nil, err
 	}
-	var resp []stateObj
-	err = c.sendRequest(req, &resp)
-	if err != nil {
+
+	var resp []State
+
+	if err = c.sendRequest(req, &resp); err != nil {
 		return nil, err
 	}
 
@@ -204,15 +209,16 @@ func (c *Client) APIGetStates() ([]stateObj, error) {
 }
 
 // GetState gets the state of an entity in Home Assistant.
-func (c *Client) APIGetState(entityID string) (stateObj, error) {
+func (c *Client) APIGetState(entityID string) (State, error) {
 	req, err := c.newGETRequest(fmt.Sprintf("states/%s", entityID))
 	if err != nil {
-		return stateObj{}, err
+		return State{}, err
 	}
-	var resp stateObj
-	err = c.sendRequest(req, &resp)
-	if err != nil {
-		return stateObj{}, err
+
+	var resp State
+
+	if err = c.sendRequest(req, &resp); err != nil {
+		return State{}, err
 	}
 
 	return resp, nil
@@ -226,8 +232,8 @@ func (c *Client) APIGetErrorLog() ([]map[string]interface{}, error) {
 	}
 
 	var errorLog []map[string]interface{}
-	err = c.sendRequest(req, &errorLog)
-	if err != nil {
+
+	if err = c.sendRequest(req, &errorLog); err != nil {
 		return nil, err
 	}
 
@@ -272,6 +278,7 @@ func (c *Client) APIGetCalendars(calendarID string) (map[string]interface{}, err
 	}
 
 	var calendar map[string]interface{}
+
 	if err := json.NewDecoder(resp.Body).Decode(&calendar); err != nil {
 		return nil, err
 	}
@@ -292,21 +299,29 @@ type calendarDate struct {
 	DateTime time.Time `json:"dateTime"`
 }
 
-type calendarEvents []calendarEvent
+type CalendarEvents []calendarEvent
 
 // GetCalendarEvents gets the events of a calendar in Home Assistant.
-func (c *Client) APIGetCalendarEvents(calendarID string, start *time.Time, end *time.Time) (calendarEvents, error) {
-	req, err := c.newGETRequest(fmt.Sprintf("%s/api/calendars/%s?start=%s&end=", calendarID, start.Format(time.RFC3339), end.Format(time.RFC3339)))
+func (c *Client) APIGetCalendarEvents(calendarID string, start *time.Time, end *time.Time) (CalendarEvents, error) {
+	req, err := c.newGETRequest(
+		fmt.Sprintf("%scalendars/%s?start=%s&end=",
+			calendarID,
+			start.Format(time.RFC3339),
+			end.Format(time.RFC3339)))
 	if err != nil {
 		return nil, err
 	}
+
 	q := req.URL.Query()
+
 	if start != nil {
 		q.Add("start", start.Format(time.RFC3339))
 	}
+
 	if end != nil {
 		q.Add("end", end.Format(time.RFC3339))
 	}
+
 	req.URL.RawQuery = q.Encode()
 
 	resp, err := c.httpClient.Do(req)
@@ -319,7 +334,8 @@ func (c *Client) APIGetCalendarEvents(calendarID string, start *time.Time, end *
 		return nil, fmt.Errorf("failed to get calendar events")
 	}
 
-	var events calendarEvents
+	var events CalendarEvents
+
 	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
 		return nil, err
 	}
@@ -329,34 +345,38 @@ func (c *Client) APIGetCalendarEvents(calendarID string, start *time.Time, end *
 
 // UpsertState updates or creates a state in Home Assistant.
 // Returns a state object and a URL of the new resource if one is created.
-func (c *Client) APIUpsertState(entityID string, entityState map[string]interface{}) (stateObj, *url.URL, error) {
+func (c *Client) APIUpsertState(entityID string, entityState map[string]interface{}) (State, *url.URL, error) {
 	req, err := c.newPOSTRequest(fmt.Sprintf("states/%s", entityID), entityState)
 	if err != nil {
-		return stateObj{}, nil, err
+		return State{}, nil, err
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return stateObj{}, nil, err
+		return State{}, nil, err
 	}
+
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		var v stateObj
+		var v State
 		if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-			return stateObj{}, nil, err
+			return State{}, nil, err
 		}
+
 		return v, nil, err
 	case http.StatusCreated:
-		var v stateObj
+		var v State
 		if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-			return stateObj{}, nil, err
+			return State{}, nil, err
 		}
+
 		newResource, err := url.Parse(resp.Header.Get("Location"))
+
 		return v, newResource, err
 	default:
-		return stateObj{}, nil, fmt.Errorf("failed to upsert state")
+		return State{}, nil, fmt.Errorf("failed to upsert state")
 	}
 }
 
@@ -369,8 +389,8 @@ func (c *Client) APIFireEvent(eventType string, eventData map[string]interface{}
 	}
 
 	var resp map[string]string
-	err = c.sendRequest(req, &resp)
-	if err != nil {
+
+	if err = c.sendRequest(req, &resp); err != nil {
 		return "", err
 	}
 
@@ -379,15 +399,15 @@ func (c *Client) APIFireEvent(eventType string, eventData map[string]interface{}
 
 // APICallService calls a Home Assistant service via the REST API.
 // Returns a list of states that have changed while the service was being executed.
-func (c *Client) APICallService(domain string, service string, data map[string]interface{}) ([]stateObj, error) {
+func (c *Client) APICallService(domain string, service string, data map[string]interface{}) ([]State, error) {
 	req, err := c.newPOSTRequest(fmt.Sprintf("services/%s/%s", domain, service), data)
 	if err != nil {
 		return nil, err
 	}
 
-	var resp []stateObj
-	err = c.sendRequest(req, &resp)
-	if err != nil {
+	var resp []State
+
+	if err = c.sendRequest(req, &resp); err != nil {
 		return nil, err
 	}
 
@@ -439,10 +459,11 @@ func (c *Client) APICheckConfig() (*string, error) {
 	}
 
 	var resp checkConfig
-	err = c.sendRequest(req, &resp)
-	if err != nil {
+
+	if err = c.sendRequest(req, &resp); err != nil {
 		return nil, err
 	}
+
 	if resp.Result == "valid" {
 		return nil, nil
 	}
@@ -459,8 +480,8 @@ func (c *Client) APIHandleIntent(intent map[string]interface{}) error {
 	}
 
 	var resp checkConfig
-	err = c.sendRequest(req, &resp)
-	if err != nil {
+
+	if err = c.sendRequest(req, &resp); err != nil {
 		return err
 	}
 

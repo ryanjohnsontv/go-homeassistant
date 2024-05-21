@@ -8,11 +8,12 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-func SortStates(states []stateObj) map[string]stateObj {
-	output := make(map[string]stateObj, len(states))
+func SortStates(states []State) map[string]State {
+	output := make(map[string]State, len(states))
 	for _, state := range states {
 		output[state.EntityID] = state
 	}
+
 	return output
 }
 
@@ -29,6 +30,7 @@ func AtLeastHaVersion(version string, major, minor int, patch ...int) bool {
 	}
 
 	p := patch[0]
+
 	return haMajor > major ||
 		(haMajor == major && haMinor > minor) ||
 		(haMajor == major && haMinor == minor && haPatch >= p)
@@ -38,11 +40,14 @@ func (c *Client) populateStateVars(states []byte) error {
 	type r struct {
 		States []json.RawMessage `json:"result"`
 	}
+
 	var rawStates r
+
 	if err := json.Unmarshal(states, &rawStates); err != nil {
 		c.logger.Error().Err(err).Msg("Failed to unmarshal states")
 		return err
 	}
+
 	for _, rawState := range rawStates.States {
 		entityID := gjson.ParseBytes(rawState).Get("entity_id").String()
 		if entityStruct, exists := c.stateVars[entityID]; exists {
@@ -50,8 +55,17 @@ func (c *Client) populateStateVars(states []byte) error {
 				c.logger.Error().Str("entity_id", entityID).Err(err).Msg("Error unmarshalling to struct")
 				continue
 			}
-			c.logger.Debug().Str("entity_id", entityID).Interface("entity", entityStruct).Msg("Unmarshalled entity")
+
+			c.logger.Debug().
+				Str("entity_id", entityID).
+				Interface("entity", entityStruct).
+				Msg("Unmarshalled entity")
 		}
 	}
+
 	return nil
+}
+
+func boolPointer(b bool) *bool {
+	return &b
 }

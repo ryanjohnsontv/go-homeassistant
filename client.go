@@ -33,7 +33,7 @@ type Client struct {
 	mu                      sync.Mutex
 	msgHistory              map[int64]interface{}
 	stateVars               map[string]interface{}
-	States                  map[string]stateObj
+	States                  map[string]State
 }
 
 type Config struct {
@@ -65,6 +65,7 @@ func NewWebsocketClient(cfg Config, options ...ClientOption) (*Client, error) {
 	if cfg.Host == "" {
 		return nil, ErrMissingHAAddress
 	}
+
 	if cfg.AccessToken == "" {
 		return nil, ErrMissingToken
 	}
@@ -90,7 +91,7 @@ func NewWebsocketClient(cfg Config, options ...ClientOption) (*Client, error) {
 		pongChan:                make(chan bool),
 		stopChan:                make(chan bool),
 		reconnectChan:           make(chan bool),
-		States:                  make(map[string]stateObj),
+		States:                  make(map[string]State),
 		msgHistory:              make(map[int64]interface{}),
 		httpClient:              http.DefaultClient,
 	}
@@ -132,16 +133,20 @@ func (c *Client) Run() error {
 	if err := c.connect(); err != nil {
 		return err
 	}
+
 	go c.listen()
 	go c.startHeartbeat()
+
 	_, err := c.GetStates()
 	if err != nil {
 		return err
 	}
+
 	err = c.SubscribeToEvent("state_changed", nil)
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 

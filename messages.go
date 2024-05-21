@@ -62,13 +62,13 @@ type (
 	}
 
 	getStatesResponse struct {
-		Result []stateObj `json:"result"`
+		Result []State `json:"result"`
 	}
 
 	getConfigResponse struct {
-		Result config `json:"result"`
+		Result HomeAssistantConfig `json:"result"`
 	}
-	config struct {
+	HomeAssistantConfig struct {
 		Latitude   float64 `json:"latitude"`
 		Longitude  float64 `json:"longitude"`
 		Elevation  int     `json:"elevation"`
@@ -115,9 +115,9 @@ type (
 	// }
 
 	getPanelsResponse struct {
-		Result map[string]component `json:"result"`
+		Result map[string]Component `json:"result"`
 	}
-	component struct {
+	Component struct {
 		ComponentName string  `json:"component_name"`
 		Icon          *string `json:"icon"`
 		Title         *string `json:"title"`
@@ -146,7 +146,7 @@ type (
 		Context   Context         `json:"context"`
 	}
 
-	State struct {
+	EntityState struct {
 		unavailable bool
 		unknown     bool
 		State       interface{}
@@ -156,9 +156,9 @@ type (
 		data map[string]interface{}
 	}
 
-	stateObj struct {
+	State struct {
 		EntityID     string                 `json:"entity_id"`
-		State        State                  `json:"state"`
+		State        EntityState            `json:"state"`
 		Attributes   map[string]interface{} `json:"attributes"`
 		LastChanged  *time.Time             `json:"last_changed"`
 		LastUpdated  *time.Time             `json:"last_updated"`
@@ -167,11 +167,11 @@ type (
 	}
 
 	StateChange struct {
-		EntityID string    `json:"entity_id"`
-		NewState stateObj  `json:"new_state"`
-		OldState *stateObj `json:"old_state"`
+		EntityID string `json:"entity_id"`
+		NewState State  `json:"new_state"`
+		OldState *State `json:"old_state"`
 	}
-	States map[string]stateObj
+	States map[string]State
 
 	Trigger struct {
 		Trigger json.RawMessage `json:"trigger"`
@@ -183,32 +183,33 @@ func GetEntityDomain(eid string) string {
 	return parts[0]
 }
 
-func (s *State) UnmarshalJSON(data []byte) error {
+func (s *EntityState) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &s.State); err != nil {
 		return err
 	}
-	switch s.State.(type) {
-	case string:
-		if s.State == "unavailable" {
+
+	if stateStr, ok := s.State.(string); ok {
+		if stateStr == "unavailable" {
 			s.unavailable = true
 			return nil
-		} else if s.State == "unknown" {
+		} else if stateStr == "unknown" {
 			s.unknown = true
 			return nil
 		}
 	}
+
 	return nil
 }
 
-func (s *State) IsUnavailable() bool {
+func (s *EntityState) IsUnavailable() bool {
 	return s.unavailable
 }
 
-func (s *State) IsUnknown() bool {
+func (s *EntityState) IsUnknown() bool {
 	return s.unknown
 }
 
-func (s *State) ToBool() *bool {
+func (s *EntityState) ToBool() *bool {
 	if s.State != nil {
 		switch raw := s.State.(type) {
 		case string:
@@ -222,6 +223,7 @@ func (s *State) ToBool() *bool {
 			return &raw
 		}
 	}
+
 	return nil
 }
 
@@ -229,6 +231,7 @@ func (a *Attributes) Get(key string) interface{} {
 	if value, exists := a.data[key]; exists {
 		return value
 	}
+
 	return nil
 }
 
@@ -238,6 +241,7 @@ func (a *Attributes) GetString(key string) *string {
 			return &strVal
 		}
 	}
+
 	return nil
 }
 
@@ -247,6 +251,7 @@ func (a *Attributes) GetBool(key string) *bool {
 			return &boolVal
 		}
 	}
+
 	return nil
 }
 
@@ -260,6 +265,7 @@ func (a *Attributes) GetInt(key string) *int {
 			return &intVal
 		}
 	}
+
 	return nil
 }
 
@@ -269,6 +275,7 @@ func (a *Attributes) GetFloat(key string) *float64 {
 			return &floatVal
 		}
 	}
+
 	return nil
 }
 
@@ -278,6 +285,7 @@ func (a *Attributes) GetTime(key, layout string) (*time.Time, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		return &timeConv, nil
 	}
 
@@ -288,6 +296,7 @@ func (a *Attributes) GetIntSlice(key string) *[]int {
 	if val, exists := a.data[key]; exists {
 		if slice, ok := val.([]interface{}); ok {
 			intSlice := make([]int, len(slice))
+
 			for i, v := range slice {
 				switch v := v.(type) {
 				case int:
@@ -298,9 +307,11 @@ func (a *Attributes) GetIntSlice(key string) *[]int {
 					return nil
 				}
 			}
+
 			return &intSlice
 		}
 	}
+
 	return nil
 }
 
@@ -308,6 +319,7 @@ func (a *Attributes) GetFloat64Slice(key string) *[]float64 {
 	if val, exists := a.data[key]; exists {
 		if slice, ok := val.([]interface{}); ok {
 			floatSlice := make([]float64, len(slice))
+
 			for i, v := range slice {
 				if floatVal, ok := v.(float64); ok {
 					floatSlice[i] = floatVal
@@ -315,9 +327,11 @@ func (a *Attributes) GetFloat64Slice(key string) *[]float64 {
 					return nil
 				}
 			}
+
 			return &floatSlice
 		}
 	}
+
 	return nil
 }
 
@@ -325,6 +339,7 @@ func (a *Attributes) GetStringSlice(key string) *[]string {
 	if val, exists := a.data[key]; exists {
 		if slice, ok := val.([]interface{}); ok {
 			stringSlice := make([]string, len(slice))
+
 			for i, v := range slice {
 				if strVal, ok := v.(string); ok {
 					stringSlice[i] = strVal
@@ -332,9 +347,11 @@ func (a *Attributes) GetStringSlice(key string) *[]string {
 					return nil
 				}
 			}
+
 			return &stringSlice
 		}
 	}
+
 	return nil
 }
 
@@ -342,6 +359,7 @@ func (a *Attributes) GetBoolSlice(key string) *[]bool {
 	if val, exists := a.data[key]; exists {
 		if slice, ok := val.([]interface{}); ok {
 			boolSlice := make([]bool, len(slice))
+
 			for i, v := range slice {
 				if boolVal, ok := v.(bool); ok {
 					boolSlice[i] = boolVal
@@ -349,8 +367,10 @@ func (a *Attributes) GetBoolSlice(key string) *[]bool {
 					return nil
 				}
 			}
+
 			return &boolSlice
 		}
 	}
+
 	return nil
 }

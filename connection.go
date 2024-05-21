@@ -13,8 +13,11 @@ import (
 func (c *Client) getNextID() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	c.msgID++
+
 	id := c.msgID
+
 	return id
 }
 
@@ -22,73 +25,104 @@ func (c *Client) getNextID() int64 {
 func (c *Client) authenticate() error {
 	type (
 		authResponse struct {
-			Type    string `json:"type"`
-			Version string `json:"ha_version"`
-			Message string `json:"message"` // Only populated if auth data is incorrect (ex. Invalid Password)
+			Type    string  `json:"type"`
+			Version string  `json:"ha_version"`
+			Message *string `json:"message"` // Only populated if auth data is incorrect (ex. Invalid Password)
 		}
 		authRequest struct {
 			Type        string `json:"type"`
 			AccessToken string `json:"access_token"`
 		}
 	)
+
 	var resp authResponse
+
 	if err := c.wsConn.ReadJSON(&resp); err != nil {
-		c.logger.Error().Err(err).Msg(resp.Message)
+		c.logger.Error().
+			Err(err).
+			Msg(*resp.Message)
+
 		return err
 	}
+
 	c.haVersion = resp.Version
+
+	if !AtLeastHaVersion(c.haVersion, 2024, 1, 0) {
+		return ErrNotMinimumVersion
+	}
+
 	for i := 0; i < 5; i++ {
 		request := authRequest{
 			Type:        "auth",
 			AccessToken: c.accessToken,
 		}
 		if err := c.wsConn.WriteJSON(request); err != nil {
-			c.logger.Error().Err(err).Int("retry_attempt", i+1).Msg("Error sending auth message")
+			c.logger.Error().
+				Err(err).
+				Int("retry_attempt", i+1).
+				Msg("Error sending auth message")
 			time.Sleep(2 * time.Second)
+
 			continue
 		}
 
 		var resp authResponse
 		if err := c.wsConn.ReadJSON(&resp); err != nil {
-			c.logger.Error().Err(err).Int("retry_attempt", i+1).Msg("Error reading auth response")
+			c.logger.Error().Err(err).
+				Int("retry_attempt", i+1).
+				Msg("Error reading auth response")
 			time.Sleep(2 * time.Second)
+
 			continue
 		}
 
 		switch resp.Type {
 		case "auth_required":
-			c.logger.Error().Str("response_type", resp.Type).Int("retry_attempt", i+1).Msg("Authentication required")
+			c.logger.Error().
+				Str("response_type", resp.Type).
+				Int("retry_attempt", i+1).
+				Msg("Authentication required")
 			time.Sleep(2 * time.Second)
+
 			continue
 		case "auth_ok":
-			c.logger.Info().Msg("Authentication successful!")
+			c.logger.Info().
+				Msg("Authentication successful!")
 			return nil
 		case "auth_invalid":
-			return errors.New(resp.Message)
+			return errors.New(*resp.Message)
 		default:
-			c.logger.Error().Str("response_type", resp.Type).Int("retry_attempt", i+1).Msg("Unknown auth response type")
+			c.logger.Error().
+				Str("response_type", resp.Type).
+				Int("retry_attempt", i+1).
+				Msg("Unknown auth response type")
 			time.Sleep(2 * time.Second)
+
 			continue
 		}
 	}
+
 	return fmt.Errorf("failed to authenticate")
 }
 
 // Dial and configure websocket connection
 func (c *Client) connect() error {
 	dialer := websocket.DefaultDialer
-	conn, _, err := dialer.Dial(c.wsURL, nil)
+
+	conn, resp, err := dialer.Dial(c.wsURL, nil)
 	if err != nil {
-		c.logger.Error().Err(err).Msg("Unable to dial home assistant")
-	} else {
-		c.wsConn = conn
-		if err := c.authenticate(); err != nil {
-			return err
-		} else {
-			return nil
-		}
+		c.logger.Error().
+			Err(err).
+			Msg("Unable to dial home assistant")
+		resp.Body.Close()
 	}
-	return fmt.Errorf("failed to connect or authenticate")
+
+	c.wsConn = conn
+	if err := c.authenticate(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 type incomingMsg struct {
@@ -100,6 +134,7 @@ type incomingMsg struct {
 // Messages are automatically sorted based on type.
 func (c *Client) listen() {
 	defer c.wsConn.Close()
+
 	for {
 		select {
 		case <-c.reconnectChan:
@@ -108,12 +143,16 @@ func (c *Client) listen() {
 			if err != nil {
 				c.logger.Error().Err(err).Msg("Error reading message")
 				c.reconnectChan <- true
+
 				break
 			}
+
 			var m incomingMsg
+
 			if err := json.Unmarshal(msg, &m); err != nil {
 				c.logger.Error().Err(err).Bytes("message", msg).Msg("Error unmarshaling message")
 			}
+
 			switch m.Type {
 			case "pong":
 				c.pongChan <- true
@@ -134,15 +173,23 @@ func (c *Client) eventResponseHandler(id int64, msg []byte) {
 		var response struct {
 			Event Event `json:"event"`
 		}
+
 		if err := json.Unmarshal(msg, &response); err != nil {
-			c.logger.Error().Err(err).Bytes("message", msg).Msg("Error unmarshalling event message")
+			c.logger.Error().
+				Err(err).
+				Bytes("message", msg).
+				Msg("Error unmarshalling event message")
 		}
-		c.logger.Debug().Interface("event", response.Event).Msg("Received event message")
+
+		c.logger.Debug().
+			Interface("event", response.Event).
+			Msg("Received event message")
+
 		if handler.Callback != nil {
 			go handler.Callback(&response.Event)
 		}
-		switch response.Event.EventType {
-		case "state_changed":
+
+		if response.Event.EventType == "state_changed" {
 			go c.updateState(response.Event.Data)
 			return
 		}
@@ -181,13 +228,15 @@ func (c *Client) startHeartbeat() {
 			c.logger.Warn().Msg("Reconnecting...")
 			c.wsConn.Close()
 			c.msgID = 1
+
 			var attempt int
+
 			for {
-				if err := c.Run(); err != nil {
-					break
-				} else {
+				if err := c.Run(); err == nil {
 					attempt++
-					c.logger.Info().Int("attempt", attempt).Msg("Reconnect failed, trying again")
+					c.logger.Info().
+						Int("attempt", attempt).
+						Msg("Reconnect failed, trying again")
 					time.Sleep(5 * time.Second)
 				}
 			}
@@ -197,12 +246,20 @@ func (c *Client) startHeartbeat() {
 
 // Send message to websocket
 func (c *Client) write(id int64, msg any) error {
-	c.logger.Debug().Interface("message", msg).Msg("Writing message")
+	c.logger.Debug().
+		Interface("message", msg).
+		Msg("Writing message")
+
 	c.msgHistory[id] = msg
+
 	if err := c.wsConn.WriteJSON(msg); err != nil {
-		//c.reconnectChan <- true
-		c.logger.Error().Err(err).Interface("message", msg).Msg("Error sending message")
+		// c.reconnectChan <- true
+		c.logger.Error().
+			Err(err).Interface("message", msg).
+			Msg("Error sending message")
+
 		return fmt.Errorf("error sending message: %v\nerror: %v", msg, err)
 	}
+
 	return nil
 }
