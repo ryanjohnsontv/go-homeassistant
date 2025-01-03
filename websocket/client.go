@@ -1,25 +1,21 @@
-package homeassistant
+package websocket
 
 import (
-	"net/http"
 	"net/url"
-	"os"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/rs/zerolog"
+	"github.com/ryanjohnsontv/go-homeassistant/logging"
+	"github.com/ryanjohnsontv/go-homeassistant/shared/types"
 )
 
 type Client struct {
-	wsURL                   string
-	apiURL                  string
-	secure                  bool
-	accessToken             string
+	wsURL                   url.URL // Formatted Home Assistant websocket URL (ws://ha.local:8123/api/websocket)
+	accessToken             string  // Long-Lived Token from Home Assistant
 	haVersion               string
 	wsConn                  *websocket.Conn
-	httpClient              *http.Client
-	logger                  zerolog.Logger
+	logger                  logging.Logger
 	msgID                   int64
 	eventHandler            map[int64]eventHandler
 	triggerHandler          map[int64][]triggerHandler
@@ -31,8 +27,8 @@ type Client struct {
 	stopChan                chan bool
 	reconnectChan           chan bool
 	mu                      sync.Mutex
-	msgHistory              map[int64]interface{}
-	stateVars               map[string]interface{}
+	msgHistory              map[int64]cmdMessage
+	stateVars               map[string]any
 	States                  map[string]State
 }
 
@@ -46,7 +42,7 @@ type (
 
 	eventHandler struct {
 		EventType string
-		Callback  func(*Event)
+		Callback  func(*types.HassEvent)
 	}
 	triggerHandler struct {
 		Callback func(*Trigger)
@@ -61,7 +57,7 @@ type (
 	}
 )
 
-func NewWebsocketClient(cfg Config, options ...ClientOption) (*Client, error) {
+func NewClient(cfg Config, options ...ClientOption) (*Client, error) {
 	if cfg.Host == "" {
 		return nil, ErrMissingHAAddress
 	}
@@ -70,18 +66,10 @@ func NewWebsocketClient(cfg Config, options ...ClientOption) (*Client, error) {
 		return nil, ErrMissingToken
 	}
 
-	wsURL := url.URL{Host: cfg.Host, Path: "/api/websocket", Scheme: "ws"}
-	apiURL := url.URL{Host: cfg.Host, Path: "/api/", Scheme: "http"}
-
-	defaultLogger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).
-		With().
-		Timestamp().
-		Logger().
-		Level(zerolog.ErrorLevel)
-
 	c := &Client{
+		wsURL:                   url.URL{Host: cfg.Host, Path: "/api/websocket", Scheme: "ws"},
 		accessToken:             cfg.AccessToken,
-		logger:                  defaultLogger,
+		logger:                  &logging.DefaultLogger{},
 		eventHandler:            make(map[int64]eventHandler),
 		triggerHandler:          make(map[int64][]triggerHandler),
 		entityListeners:         make(map[string][]entityListener),
@@ -92,26 +80,17 @@ func NewWebsocketClient(cfg Config, options ...ClientOption) (*Client, error) {
 		stopChan:                make(chan bool),
 		reconnectChan:           make(chan bool),
 		States:                  make(map[string]State),
-		msgHistory:              make(map[int64]interface{}),
-		httpClient:              http.DefaultClient,
+		msgHistory:              make(map[int64]cmdMessage),
 	}
 
 	for _, option := range options {
 		option(c)
 	}
 
-	if c.secure {
-		wsURL.Scheme = "wss"
-		apiURL.Scheme = "https"
-	}
-
-	c.apiURL = apiURL.String()
-	c.wsURL = wsURL.String()
-
 	return c, nil
 }
 
-func WithCustomLogger(logger zerolog.Logger) ClientOption {
+func WithCustomLogger(logger logging.Logger) ClientOption {
 	return func(c *Client) {
 		c.logger = logger
 	}
@@ -119,11 +98,11 @@ func WithCustomLogger(logger zerolog.Logger) ClientOption {
 
 func WithSecureConnection() ClientOption {
 	return func(c *Client) {
-		c.secure = true
+		c.wsURL.Scheme = "wss"
 	}
 }
 
-func WithCustomStateVars(states map[string]interface{}) ClientOption {
+func WithCustomStateVars(states map[string]any) ClientOption {
 	return func(c *Client) {
 		c.stateVars = states
 	}

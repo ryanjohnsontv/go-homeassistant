@@ -1,26 +1,27 @@
-package homeassistant
+package websocket
 
 import (
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/ryanjohnsontv/go-homeassistant/shared/types"
+	"github.com/ryanjohnsontv/go-homeassistant/websocket/constants"
 )
 
 type (
-	baseMessage struct {
-		ID   int64  `json:"id"`
-		Type string `json:"type"`
+	cmdMessage interface {
+		SetID(id int64)
 	}
-	Context struct {
-		ID       *string `json:"id"`
-		ParentID *string `json:"parent_id"`
-		UserID   *string `json:"user_id"`
+	baseMessage struct {
+		ID   int64                 `json:"id"`
+		Type constants.MessageType `json:"type"`
 	}
 )
 
-func (re *responseError) Error() string {
-	return fmt.Sprintf("error code: %s, message: %s", re.Code, re.Message)
+func (b *baseMessage) SetID(id int64) {
+	b.ID = id
 }
 
 // Command Requests
@@ -32,20 +33,20 @@ type (
 
 	// subscribeToTriggerRequest struct {
 	// 	baseMessage
-	// 	Trigger interface{} `json:"trigger"`
+	// 	Trigger any `json:"trigger"`
 	// }
 	fireEventRequest struct {
 		baseMessage
-		EventType string      `json:"event_type"`
-		EventData interface{} `json:"event_data,omitempty"`
+		EventType string `json:"event_type"`
+		EventData any    `json:"event_data,omitempty"`
 	}
 
 	callServiceMessage struct {
 		baseMessage
-		Domain      string      `json:"domain"`
-		Service     string      `json:"service"`
-		ServiceData interface{} `json:"service_data,omitempty"`
-		Target      interface{} `json:"target,omitempty"`
+		Domain      string `json:"domain"`
+		Service     string `json:"service"`
+		ServiceData any    `json:"service_data,omitempty"`
+		Target      any    `json:"target,omitempty"`
 	}
 )
 
@@ -66,51 +67,21 @@ type (
 	}
 
 	getConfigResponse struct {
-		Result HomeAssistantConfig `json:"result"`
-	}
-	HomeAssistantConfig struct {
-		Latitude   float64 `json:"latitude"`
-		Longitude  float64 `json:"longitude"`
-		Elevation  int     `json:"elevation"`
-		UnitSystem struct {
-			Length                   string `json:"length"`
-			AccumulatedPrecipitation string `json:"accumulated_precipitation"`
-			Mass                     string `json:"mass"`
-			Pressure                 string `json:"pressure"`
-			Temperature              string `json:"temperature"`
-			Volume                   string `json:"volume"`
-			WindSpeed                string `json:"wind_speed"`
-		} `json:"unit_system"`
-		LocationName          string   `json:"location_name"`
-		TimeZone              string   `json:"time_zone"`
-		Components            []string `json:"components"`
-		ConfigDir             string   `json:"config_dir"`
-		WhitelistExternalDirs []string `json:"whitelist_external_dirs"`
-		AllowlistExternalDirs []string `json:"allowlist_external_dirs"`
-		AllowlistExternalURLs []string `json:"allowlist_external_urls"`
-		Version               string   `json:"version"`
-		ConfigSource          string   `json:"config_source"`
-		SafeMode              bool     `json:"safe_mode"`
-		State                 string   `json:"state"`
-		ExternalURL           *string  `json:"external_url"`
-		InternalURL           *string  `json:"internal_url"`
-		Currency              string   `json:"currency"`
-		Country               string   `json:"country"`
-		Language              string   `json:"language"`
+		Result types.HassConfig `json:"result"`
 	}
 
 	getServicesResponse struct {
-		Result map[string]interface{} `json:"result"`
+		Result map[string]any `json:"result"`
 	}
 	// services struct {
-	// 	Service map[string]interface{}
+	// 	Service map[string]any
 	// }
 	// service struct {
 	// 	Name        string                 `mapstructure:"name"`
 	// 	Description string                 `mapstructure:"description"`
-	// 	Fields      map[string]interface{} `mapstructure:"fields"`
+	// 	Fields      map[string]any `mapstructure:"fields"`
 	// 	Target      struct {
-	// 		Entity []interface{} `mapstructure:"entity"`
+	// 		Entity []any `mapstructure:"entity"`
 	// 	} `mapstructure:"target"`
 	// }
 
@@ -137,33 +108,37 @@ type (
 	}
 )
 
+func (re responseError) Error() string {
+	return fmt.Sprintf("error code: %s, message: %s", re.Code, re.Message)
+}
+
 type (
 	Event struct {
 		EventType string          `json:"event_type"`
 		Data      json.RawMessage `json:"data"`
 		Origin    string          `json:"origin"`
 		TimeFired time.Time       `json:"time_fired"`
-		Context   Context         `json:"context"`
+		Context   types.Context   `json:"context"`
 	}
 
 	EntityState struct {
 		unavailable bool
 		unknown     bool
-		State       interface{}
+		State       any
 	}
 
 	Attributes struct {
-		data map[string]interface{}
+		data map[string]any
 	}
 
 	State struct {
-		EntityID     string                 `json:"entity_id"`
-		State        EntityState            `json:"state"`
-		Attributes   map[string]interface{} `json:"attributes"`
-		LastChanged  *time.Time             `json:"last_changed"`
-		LastUpdated  *time.Time             `json:"last_updated"`
-		LastReported *time.Time             `json:"last_reported"`
-		Context      Context                `json:"context"`
+		EntityID     string         `json:"entity_id"`
+		State        EntityState    `json:"state"`
+		Attributes   map[string]any `json:"attributes"`
+		LastChanged  *time.Time     `json:"last_changed"`
+		LastUpdated  *time.Time     `json:"last_updated"`
+		LastReported *time.Time     `json:"last_reported"`
+		Context      types.Context  `json:"context"`
 	}
 
 	StateChange struct {
@@ -227,7 +202,7 @@ func (s *EntityState) ToBool() *bool {
 	return nil
 }
 
-func (a *Attributes) Get(key string) interface{} {
+func (a *Attributes) Get(key string) any {
 	if value, exists := a.data[key]; exists {
 		return value
 	}
@@ -294,7 +269,7 @@ func (a *Attributes) GetTime(key, layout string) (*time.Time, error) {
 
 func (a *Attributes) GetIntSlice(key string) *[]int {
 	if val, exists := a.data[key]; exists {
-		if slice, ok := val.([]interface{}); ok {
+		if slice, ok := val.([]any); ok {
 			intSlice := make([]int, len(slice))
 
 			for i, v := range slice {
@@ -317,7 +292,7 @@ func (a *Attributes) GetIntSlice(key string) *[]int {
 
 func (a *Attributes) GetFloat64Slice(key string) *[]float64 {
 	if val, exists := a.data[key]; exists {
-		if slice, ok := val.([]interface{}); ok {
+		if slice, ok := val.([]any); ok {
 			floatSlice := make([]float64, len(slice))
 
 			for i, v := range slice {
@@ -337,7 +312,7 @@ func (a *Attributes) GetFloat64Slice(key string) *[]float64 {
 
 func (a *Attributes) GetStringSlice(key string) *[]string {
 	if val, exists := a.data[key]; exists {
-		if slice, ok := val.([]interface{}); ok {
+		if slice, ok := val.([]any); ok {
 			stringSlice := make([]string, len(slice))
 
 			for i, v := range slice {
@@ -357,7 +332,7 @@ func (a *Attributes) GetStringSlice(key string) *[]string {
 
 func (a *Attributes) GetBoolSlice(key string) *[]bool {
 	if val, exists := a.data[key]; exists {
-		if slice, ok := val.([]interface{}); ok {
+		if slice, ok := val.([]any); ok {
 			boolSlice := make([]bool, len(slice))
 
 			for i, v := range slice {

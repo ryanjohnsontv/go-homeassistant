@@ -1,4 +1,4 @@
-package homeassistant
+package websocket
 
 import (
 	"time"
@@ -40,9 +40,7 @@ func (c *Client) triggerCallbacks(t time.Time) {
 func (c *Client) executeCallbacks(dateTimeMap map[string][]dateTimeEntityTrigger) {
 	for entityID, functions := range dateTimeMap {
 		for _, eventTrigger := range functions {
-			c.logger.Debug().
-				Str("entity_id", entityID).
-				Msg("Triggering datetime entity callback function")
+			c.logger.Debug("triggering datetime entity callback function for %s", entityID)
 
 			if eventTrigger.timeType == "time" {
 				go eventTrigger.callback()

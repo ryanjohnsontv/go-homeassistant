@@ -1,4 +1,4 @@
-package homeassistant
+package websocket
 
 import (
 	"encoding/json"
@@ -71,9 +71,7 @@ func (c *Client) AddEntityListener(entityID string, f func(*StateChange), opts .
 	}
 
 	c.entityListeners[entityID] = append(c.entityListeners[entityID], listener)
-	c.logger.Debug().
-		Str("entity_id", entityID).
-		Msg("Added entity listener")
+	c.logger.Debug("added entity listener for %s", entityID)
 
 	return nil
 }
@@ -86,10 +84,7 @@ func (c *Client) AddEntitiesListener(entityIDs []string, f func(*StateChange), o
 
 	for _, entityID := range entityIDs {
 		if _, exists := c.States[entityID]; !exists {
-			c.logger.Debug().
-				Str("entity_id", entityID).
-				Msg("Entity ID does not exist")
-
+			c.logger.Debug("entity id does not exist: %s", entityID)
 			return fmt.Errorf("entity id does not exist: %s", entityID)
 		}
 
@@ -99,9 +94,7 @@ func (c *Client) AddEntitiesListener(entityIDs []string, f func(*StateChange), o
 		}
 
 		c.entityListeners[entityID] = append(c.entityListeners[entityID], listener)
-		c.logger.Debug().
-			Str("entity_id", entityID).
-			Msg("Added entity listener")
+		c.logger.Debug("added entity listener for %s", entityID)
 	}
 
 	return nil
@@ -111,7 +104,7 @@ func (c *Client) AddEntitiesListener(entityIDs []string, f func(*StateChange), o
 func (c *Client) AddRegexEntityListener(regexPattern string, f func(*StateChange), opts ...FilterOption) error {
 	_, err := regexp.Compile(regexPattern)
 	if err != nil {
-		return fmt.Errorf("invalid regex pattern: %v", err)
+		return fmt.Errorf("invalid regex pattern: %w", err)
 	}
 
 	filters := &filterOptions{}
@@ -125,9 +118,7 @@ func (c *Client) AddRegexEntityListener(regexPattern string, f func(*StateChange
 	}
 
 	c.entityListeners[regexPattern] = append(c.entityListeners[regexPattern], listener)
-	c.logger.Debug().
-		Str("regex_pattern", regexPattern).
-		Msg("Added regex entity listener")
+	c.logger.Debug("added regex entity listener pattern %s", regexPattern)
 
 	return nil
 }
@@ -147,13 +138,13 @@ func (c *Client) updateState(input []byte) {
 	var msg StateChange
 
 	if err := json.Unmarshal(input, &msg); err != nil {
-		c.logger.Error().Err(err).Bytes("input", input).Msg("Error decoding state change for update")
+		c.logger.Error("error decoding state change for update: input %s\nerror: %w", string(input), err)
 		return
 	}
 
 	if val, exists := c.stateVars[msg.EntityID]; exists {
 		if err := json.Unmarshal(input, val); err != nil {
-			c.logger.Error().Err(err).Bytes("input", input).Msg("Error decoding state change for update")
+			c.logger.Error("error decoding state change for update: input %s\nerror: %w", string(input), err)
 			return
 		}
 	}
@@ -217,7 +208,7 @@ func (c *Client) matchRegex(pattern string, entityListeners []entityListener, ms
 
 func (c *Client) triggerCallback(msg *StateChange, el entityListener) {
 	if msg.shouldTriggerListener(el.FilterOptions) {
-		c.logger.Debug().Str("entity_id", msg.EntityID).Interface("message", msg).Msg("Triggering entity callback function")
+		c.logger.Debug("triggering entity callback function for %s: %w", msg.EntityID, msg)
 		el.callback(msg)
 	}
 }

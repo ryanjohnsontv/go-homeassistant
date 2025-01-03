@@ -1,4 +1,4 @@
-package homeassistant
+package websocket
 
 import "errors"
 
