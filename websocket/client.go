@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"errors"
 	"net/url"
 	"regexp"
 	"sync"
@@ -33,7 +34,7 @@ type Client struct {
 	reconnectChan           chan bool
 	mu                      sync.Mutex
 	msgHistory              map[int64]cmdMessage
-	States                  types.Entities
+	EntitiesMap             types.EntitiesMap
 }
 
 type (
@@ -44,7 +45,7 @@ type (
 		Callback  func(types.Event)
 	}
 	triggerHandler struct {
-		Callback func(Trigger)
+		Callback func(types.Trigger)
 	}
 	entityListener struct {
 		callback      func(*types.StateChange)
@@ -54,11 +55,11 @@ type (
 
 func NewClient(host, accessToken string, options ...ClientOption) (*Client, error) {
 	if host == "" {
-		return nil, ErrMissingHAAddress
+		return nil, errors.New("home assistant address is required")
 	}
 
 	if accessToken == "" {
-		return nil, ErrMissingToken
+		return nil, errors.New("access token is required")
 	}
 
 	wsURL := url.URL{Host: host, Path: "/api/websocket", Scheme: "ws"}
@@ -76,7 +77,7 @@ func NewClient(host, accessToken string, options ...ClientOption) (*Client, erro
 		pongChan:                make(chan bool),
 		stopChan:                make(chan bool),
 		reconnectChan:           make(chan bool),
-		States:                  make(types.Entities),
+		EntitiesMap:             make(types.EntitiesMap),
 		msgHistory:              make(map[int64]cmdMessage),
 	}
 

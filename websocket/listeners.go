@@ -60,8 +60,8 @@ func IgnoreStatesEqual() FilterOption {
 }
 
 func (c *Client) AddEntityListener(entityID entity.ID, f func(*types.StateChange), opts ...FilterOption) error {
-	if _, exists := c.States[entityID]; !exists {
-		return fmt.Errorf("entity id does not exist: %s", entityID)
+	if err := c.EntitiesMap.Exists(entityID); err != nil {
+		return err
 	}
 
 	filters := &filterOptions{}
@@ -87,8 +87,8 @@ func (c *Client) AddEntitiesListener(entityIDs []entity.ID, f func(*types.StateC
 	}
 
 	for _, entityID := range entityIDs {
-		if _, exists := c.States[entityID]; !exists {
-			return fmt.Errorf("entity id does not exist: %s", entityID)
+		if err := c.EntitiesMap.Exists(entityID); err != nil {
+			return err
 		}
 
 		listener := entityListener{
@@ -126,16 +126,13 @@ func (c *Client) AddRegexEntityListener(regexPattern string, f func(*types.State
 	return nil
 }
 
-// func (c *Client) AddDateTimeEntityTrigger(entityID string, callback func()) error {
-// 	if _, exists := c.States[entityID]; !exists {
-// 		c.logger.Debug("Entity ID does not exist",
-// 			"EntityID", entityID,
-// 		)
-// 		return errors.New(fmt.Sprintf("Entity ID does not exist: %s", entityID))
-// 	}
-// 	currentDateTime := c.States[entityID].State.(string)
+func (c *Client) AddDateTimeEntityTrigger(entityID entity.ID, callback func()) error {
+	if err := c.EntitiesMap.Exists(entityID); err != nil {
+		return err
+	}
 
-// }
+	return nil
+}
 
 func (c *Client) updateState(input []byte) {
 	var msg types.StateChange
@@ -145,15 +142,8 @@ func (c *Client) updateState(input []byte) {
 		return
 	}
 
-	// if val, exists := c.stateVars[msg.EntityID]; exists {
-	// 	if err := json.Unmarshal(input, val); err != nil {
-	// 		c.logger.Error("error decoding state change for update: input %s\nerror: %w", string(input), err)
-	// 		return
-	// 	}
-	// }
-
 	c.mu.Lock()
-	c.States[msg.EntityID] = *msg.NewState
+	c.EntitiesMap[msg.EntityID] = *msg.NewState
 	c.mu.Unlock()
 
 	go c.entityIDCallbackTrigger(&msg)

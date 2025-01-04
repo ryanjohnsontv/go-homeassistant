@@ -7,7 +7,6 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/ryanjohnsontv/go-homeassistant/shared/types"
-	"github.com/ryanjohnsontv/go-homeassistant/websocket/constants"
 )
 
 // Lock and increment ID used in all messages sent to Home Assistant
@@ -39,8 +38,8 @@ func (c *Client) connect() error {
 }
 
 type incomingMsg struct {
-	ID   int64                 `json:"id"`
-	Type constants.MessageType `json:"type"`
+	ID   int64       `json:"id"`
+	Type messageType `json:"type"`
 }
 
 // Listen to new messages as they come through on the websocket.
@@ -60,25 +59,32 @@ func (c *Client) listen() {
 				break
 			}
 
-			var m incomingMsg
-
-			if err := json.Unmarshal(msg, &m); err != nil {
-				c.logger.Error("error unmarshaling message: %w", err)
-			}
-
-			c.logger.Debug("received message: %+v", m)
-
-			switch m.Type {
-			case constants.MessageTypePong:
-				c.pongChan <- true
-			case constants.MessageTypeResult:
-				c.resultChan[m.ID] <- msg
-			case constants.MessageTypeEvent:
-				go c.eventResponseHandler(m.ID, msg)
-			default:
-				c.logger.Warn("unknown message type: %s", m.Type.String())
-			}
+			go c.parseIncomingMessage(msg)
 		}
+	}
+}
+
+func (c *Client) parseIncomingMessage(msg []byte) {
+	if msg == nil {
+		return
+	}
+
+	var m incomingMsg
+	if err := json.Unmarshal(msg, &m); err != nil {
+		c.logger.Error("error unmarshaling message: %w", err)
+	}
+
+	c.logger.Debug("received message: %s", string(msg))
+
+	switch m.Type {
+	case messageTypePong:
+		c.pongChan <- true
+	case messageTypeResult:
+		c.resultChan[m.ID] <- msg
+	case messageTypeEvent:
+		go c.eventResponseHandler(m.ID, msg)
+	default:
+		c.logger.Warn("unknown message type: %s", m.Type.String())
 	}
 }
 
@@ -92,8 +98,6 @@ func (c *Client) eventResponseHandler(id int64, msg []byte) {
 		if err := json.Unmarshal(msg, &response); err != nil {
 			c.logger.Error("error unmarshalling event message: %w", err)
 		}
-
-		c.logger.Debug("received event message: %w", response)
 
 		if handler.Callback != nil {
 			go handler.Callback(response.Event)
@@ -112,25 +116,32 @@ func (c *Client) startHeartbeat() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
+	consecutiveTimeouts := 0
+	maxTimeouts := 3
+
 	for {
 		select {
-		// Heartbeat ticker received
 		case <-ticker.C:
-			msg := baseMessage{
-				Type: constants.MessageTypePing,
-			}
-			if err := c.write(&msg); err != nil {
+			if err := c.sendPing(); err != nil {
 				c.logger.Error("error sending ping: %w", err)
 			}
-			// Start a timer to detect timeout
-			timeout := time.NewTimer(10 * time.Second)
-			// Wait for a pong response or a timeout
+
+			timeout := time.NewTimer(c.timeout)
 			select {
 			case <-c.pongChan:
-				c.logger.Debug("received pong")
+				consecutiveTimeouts = 0
+
 				continue
 			case <-timeout.C:
-				c.logger.Error("ping timeout")
+				consecutiveTimeouts++
+				c.logger.Warn("ping timeout #%d", consecutiveTimeouts)
+
+				if consecutiveTimeouts >= maxTimeouts {
+					c.logger.Error("ping failed after %d timeouts, reconnecting", maxTimeouts)
+					c.reconnectChan <- true
+
+					return
+				}
 			}
 		// If reconnect called, attempt to establish reconnection
 		case <-c.reconnectChan:
@@ -151,20 +162,15 @@ func (c *Client) startHeartbeat() {
 	}
 }
 
-// Send message to websocket
-func (c *Client) write(msg cmdMessage) error {
-	c.logger.Debug("writing message: %+v", msg)
-
+func (c *Client) sendPing() error {
+	msg := baseMessage{
+		Type: messageTypePing,
+	}
 	id := c.getNextID()
 	msg.SetID(id)
 
-	c.msgHistory[id] = msg
-
-	if err := c.wsConn.WriteJSON(msg); err != nil {
-		// c.reconnectChan <- true
-		c.logger.Error("error sending message: %v", msg)
-
-		return fmt.Errorf("error sending message: %v\nerror: %w", msg, err)
+	if err := c.wsConn.WriteJSON(&msg); err != nil {
+		return fmt.Errorf("error sending ping: %w", err)
 	}
 
 	return nil

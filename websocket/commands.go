@@ -6,8 +6,6 @@ import (
 	"time"
 
 	"github.com/ryanjohnsontv/go-homeassistant/shared/types"
-	"github.com/ryanjohnsontv/go-homeassistant/shared/utils"
-	"github.com/ryanjohnsontv/go-homeassistant/websocket/constants"
 )
 
 type subscribeToEventRequest struct {
@@ -18,17 +16,13 @@ type subscribeToEventRequest struct {
 func (c *Client) SubscribeToEvent(eventType string, f func(types.Event)) error {
 	request := subscribeToEventRequest{
 		baseMessage: baseMessage{
-			Type: constants.MessageTypeSubscribeEvent,
+			Type: messageTypeSubscribeEvent,
 		},
-	}
-	if eventType != "" {
-		request.EventType = eventType
+		EventType: eventType,
 	}
 
-	_, err := c.cmdResponse(&request)
-	if err != nil {
+	if err := c.write(&request, nil); err != nil {
 		c.logger.Error("failed to subscribe to event: %w", err)
-
 		return err
 	}
 
@@ -44,22 +38,32 @@ func (c *Client) SubscribeToEvent(eventType string, f func(types.Event)) error {
 	return nil
 }
 
-// func (c *Client) SubscribeToTrigger(trigger any, handler func(event Event)) error {
-// 	request := subscribeToTriggerRequest{
-// 		baseMessage: baseMessage{
-// 			ID:   c.getNextID(),
-// 			Type: "subscribe_trigger",
-// 		},
-// 		Trigger: trigger,
-// 	}
+type subscribeToTriggerRequest struct {
+	baseMessage
+	Trigger any `json:"trigger"`
+}
 
-// 	_, err := c.cmdResponse(request.ID, request)
-// 	if err != nil {
-// 		c.logger.Error().Err(err).Msg("Failed to subscribe to trigger")
-// 		return err
-// 	}
-// 	return nil
-// }
+func (c *Client) SubscribeToTrigger(trigger any, f func(types.Trigger)) error {
+	request := subscribeToTriggerRequest{
+		baseMessage: baseMessage{
+			Type: messageTypeSubscribeTrigger,
+		},
+		Trigger: trigger,
+	}
+
+	if err := c.write(&request, nil); err != nil {
+		c.logger.Error("failed to subscribe to trigger: %w", err)
+		return err
+	}
+
+	c.mu.Lock()
+	c.triggerHandler[request.ID] = append(c.triggerHandler[request.ID], triggerHandler{Callback: f})
+	c.mu.Unlock()
+
+	c.logger.Info("subscribed to trigger: %+v", trigger)
+
+	return nil
+}
 
 type fireEventRequest struct {
 	baseMessage
@@ -70,29 +74,28 @@ type fireEventRequest struct {
 func (c *Client) FireEvent(eventType string, eventData any) (types.Context, error) {
 	request := fireEventRequest{
 		baseMessage: baseMessage{
-			Type: constants.MessageTypeFireEvent,
+			Type: messageTypeFireEvent,
 		},
 		EventType: eventType,
 		EventData: eventData,
 	}
 
 	var response types.Context
-
-	message, err := c.cmdResponse(&request)
-	if err != nil {
+	if err := c.write(&request, &response); err != nil {
 		c.logger.Error("failed to fire event: %w", err)
-
-		return response, err
-	}
-
-	if err := json.Unmarshal(message, &response); err != nil {
-		c.logger.Error("failed to unmarshal response: %w", err)
 		return response, err
 	}
 
 	c.logger.Info("fired %s event", eventType)
 
 	return response, nil
+}
+
+type CallServiceParams struct {
+	Domain      string
+	Service     string
+	ServiceData any
+	Target      types.ServiceTarget
 }
 
 type callServiceMessage struct {
@@ -103,191 +106,138 @@ type callServiceMessage struct {
 	Target      types.ServiceTarget `json:"target,omitempty"`
 }
 
-func (c *Client) CallService(domain, service string, serviceData any, target types.ServiceTarget) (types.Context, error) {
+func (c *Client) CallService(params CallServiceParams) (types.Context, error) {
 	request := callServiceMessage{
 		baseMessage: baseMessage{
-			Type: constants.MessageTypeCallService,
+			Type: messageTypeCallService,
 		},
-		Domain:  domain,
-		Service: service,
+		Domain:      params.Domain,
+		Service:     params.Service,
+		ServiceData: params.ServiceData,
+		Target:      params.Target,
 	}
-	if serviceData != nil {
-		request.ServiceData = serviceData
-	}
-
-	request.Target = target
 
 	var response types.Context
-
-	message, err := c.cmdResponse(&request)
-	if err != nil {
+	if err := c.write(&request, &response); err != nil {
 		c.logger.Error("failed to call service: %w", err)
-
 		return response, err
 	}
 
-	if err := json.Unmarshal(message, &response); err != nil {
-		c.logger.Error("failed to unmarshal response: %w", err)
-
-		return response, err
-	}
-
-	c.logger.Info("called %s.%s", domain, service)
+	c.logger.Info("called %s.%s", params.Domain, params.Service)
 
 	return response, nil
 }
 
-type getStatesResponse struct {
-	Result []types.Entity `json:"result"`
-}
-
-func (c *Client) GetStates() (types.Entities, error) {
+func (c *Client) GetStates() (types.EntitiesMap, error) {
 	request := baseMessage{
-		Type: constants.MessageTypeGetStates,
+		Type: messageTypeGetStates,
 	}
 
-	message, err := c.cmdResponse(&request)
-	if err != nil {
+	var response types.Entities
+	if err := c.write(&request, &response); err != nil {
 		c.logger.Error("failed to get states: %s", err.Error())
-
 		return nil, err
 	}
 
-	// if c.stateVars != nil {
-	// 	err = c.populateStateVars(message)
-	// 	if err != nil {
-	// 		c.logger.Error("failed to populate state vars: %w", err)
-
-	// 		return nil, err
-	// 	}
-	// }
-
-	var response getStatesResponse
-	if err := json.Unmarshal(message, &response); err != nil {
-		c.logger.Error("failed to unmarshal response: %w", err)
-
-		return nil, err
-	}
-
-	c.States = utils.SortStates(response.Result)
-
+	c.EntitiesMap = response.SortStates()
 	c.logger.Info("states retrieved")
 
-	return c.States, nil
-}
-
-type getConfigResponse struct {
-	Result types.Config `json:"result"`
+	return c.EntitiesMap, nil
 }
 
 func (c *Client) GetConfig() (types.Config, error) {
 	request := baseMessage{
-		Type: constants.MessageTypeGetConfig,
+		Type: messageTypeGetConfig,
 	}
 
-	var response getConfigResponse
-
-	message, err := c.cmdResponse(&request)
-	if err != nil {
+	var response types.Config
+	if err := c.write(&request, &response); err != nil {
 		c.logger.Error("failed to get config: %w", err)
-		return types.Config{}, err
-	}
-
-	if err := json.Unmarshal(message, &response); err != nil {
-		c.logger.Error("failed to unmarshal response: %w", err)
-
 		return types.Config{}, err
 	}
 
 	c.logger.Info("config retrieved")
 
-	return response.Result, nil
+	return response, nil
 }
 
-type getServicesResponse struct {
-	Result map[string]any `json:"result"`
-}
-
-func (c *Client) GetServices() (map[string]any, error) {
+func (c *Client) GetServices() (types.Services, error) {
 	request := baseMessage{
-		Type: constants.MessageTypeGetServices,
+		Type: messageTypeGetServices,
 	}
 
-	var response getServicesResponse
-
-	message, err := c.cmdResponse(&request)
-	if err != nil {
+	var response types.Services
+	if err := c.write(&request, &response); err != nil {
 		c.logger.Error("failed to get services: %w", err)
-
-		return nil, err
-	}
-
-	if err := json.Unmarshal(message, &response); err != nil {
-		c.logger.Error("failed to unmarshal response: %w", err)
-
 		return nil, err
 	}
 
 	c.logger.Info("services retrieved")
 
-	return response.Result, nil
+	return response, nil
 }
 
-type (
-	getPanelsResponse struct {
-		Result map[string]Component `json:"result"`
-	}
-	Component struct {
-		ComponentName string  `json:"component_name"`
-		Icon          *string `json:"icon"`
-		Title         *string `json:"title"`
-		Config        *struct {
-			Mode        *string `json:"mode"`
-			Ingress     *string `json:"ingress"`
-			PanelCustom *struct {
-				Name          string `json:"name"`
-				EmbedIframe   bool   `json:"embed_iframe"`
-				TrustExternal bool   `json:"trust_external"`
-				JSURL         string `json:"js_url"`
-			} `json:"panel_custom"`
-		} `json:"config"`
-		URLPath           string  `json:"url_path"`
-		RequireAdmin      bool    `json:"require_admin"`
-		ConfigPanelDomain *string `json:"config_panel_domain"`
-	}
-)
-
-func (c *Client) GetPanels() (map[string]Component, error) {
+func (c *Client) GetPanels() (types.Panels, error) {
 	request := baseMessage{
-		Type: constants.MessageTypeGetPanels,
+		Type: messageTypeGetPanels,
 	}
 
-	var response getPanelsResponse
-
-	message, err := c.cmdResponse(&request)
-	if err != nil {
+	var response types.Panels
+	if err := c.write(&request, &response, skipHistory()); err != nil {
 		c.logger.Error("failed to get panels: %w", err)
-
-		return nil, err
-	}
-
-	if err := json.Unmarshal(message, &response); err != nil {
-		c.logger.Error("failed to unmarshal response: %w", err)
-
 		return nil, err
 	}
 
 	c.logger.Info("panels retrieved")
 
-	return response.Result, nil
+	return response, nil
 }
 
-func (c *Client) cmdResponse(request cmdMessage) ([]byte, error) {
-	responseChan := make(chan []byte, 1)
+type (
+	resultResponse struct {
+		baseMessage
+		Success bool            `json:"success"`
+		Error   *responseError  `json:"error"`
+		Result  json.RawMessage `json:"result"`
+	}
+	responseError struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+)
+
+func (re responseError) Error() string {
+	return fmt.Sprintf("error code: %s, message: %s", re.Code, re.Message)
+}
+
+type (
+	writeOption  func(*writeOptions)
+	writeOptions struct {
+		skipHistory bool
+	}
+)
+
+func skipHistory() writeOption {
+	return func(c *writeOptions) {
+		c.skipHistory = true
+	}
+}
+
+func (c *Client) write(request cmdMessage, result any, options ...writeOption) error {
+	opts := &writeOptions{}
+	for _, option := range options {
+		option(opts)
+	}
 
 	id := c.getNextID()
 	request.SetID(id)
-	// Lock to safely write to the resultChan map
+
+	if !opts.skipHistory {
+		c.msgHistory[id] = request
+	}
+
+	responseChan := make(chan []byte, 1)
+
 	c.mu.Lock()
 	c.resultChan[id] = responseChan
 	c.mu.Unlock()
@@ -302,8 +252,7 @@ func (c *Client) cmdResponse(request cmdMessage) ([]byte, error) {
 	if err := c.wsConn.WriteJSON(request); err != nil {
 		// c.reconnectChan <- true
 		c.logger.Error("error sending message: %v", request)
-
-		return nil, fmt.Errorf("error sending message: %v\nerror: %w", request, err)
+		return fmt.Errorf("error sending message: %v\nerror: %w", request, err)
 	}
 
 	select {
@@ -311,18 +260,25 @@ func (c *Client) cmdResponse(request cmdMessage) ([]byte, error) {
 		var response resultResponse
 		if err := json.Unmarshal(message, &response); err != nil {
 			c.logger.Error("failed to unmarshal response: %w", err)
-			return nil, err
+			return err
 		}
 
 		if !response.Success {
-			c.logger.Error("command failed. error_code: %s. error_message: %s", response.Error.Code, response.Error.Message)
-			return nil, response.Error
+			c.logger.Error("command failed. %s", response.Error.Error())
+			return response.Error
 		}
 
-		return message, nil
+		if result != nil {
+			if err := json.Unmarshal(response.Result, result); err != nil {
+				c.logger.Error("failed to unmarshal result: %w", err)
+				return err
+			}
+		}
+
+		return nil
 
 	case <-time.After(c.timeout):
 		c.logger.Error("response timeout for request ID: %d", id)
-		return nil, fmt.Errorf("response timeout for request ID: %d", id)
+		return fmt.Errorf("response timeout for request ID: %d", id)
 	}
 }

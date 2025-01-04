@@ -8,18 +8,17 @@ import (
 	"time"
 
 	"github.com/ryanjohnsontv/go-homeassistant/shared/version"
-	"github.com/ryanjohnsontv/go-homeassistant/websocket/constants"
 )
 
 type (
 	authResponse struct {
-		Type    constants.MessageType `json:"type"`
-		Version version.Version       `json:"ha_version"`
-		Message *string               `json:"message"` // Only populated if auth data is incorrect (ex. Invalid Password)
+		Type    messageType     `json:"type"`
+		Version version.Version `json:"ha_version"`
+		Message *string         `json:"message"` // Only populated if auth data is incorrect (ex. Invalid Password)
 	}
 	authRequest struct {
-		Type        constants.MessageType `json:"type"`
-		AccessToken string                `json:"access_token"`
+		Type        messageType `json:"type"`
+		AccessToken string      `json:"access_token"`
 	}
 )
 
@@ -40,7 +39,7 @@ func (c *Client) authenticate() error {
 
 	for i := 0; i < 5; i++ {
 		request := authRequest{
-			Type:        constants.MessageTypeAuth,
+			Type:        messageTypeAuth,
 			AccessToken: c.accessToken,
 		}
 		if err := c.wsConn.WriteJSON(request); err != nil {
@@ -59,15 +58,10 @@ func (c *Client) authenticate() error {
 		}
 
 		switch resp.Type {
-		case constants.MessageTypeAuthRequired:
-			c.logger.Error("%s. attempt %d", resp.Type.String(), i+1)
-			time.Sleep(2 * time.Second)
-
-			continue
-		case constants.MessageTypeAuthOk:
+		case messageTypeAuthOk:
 			c.logger.Info("authentication successful!")
 			return nil
-		case constants.MessageTypeAuthInvalid:
+		case messageTypeAuthInvalid:
 			return errors.New(*resp.Message)
 		default:
 			c.logger.Error("%s. attempt %d", resp.Type.String(), i+1)

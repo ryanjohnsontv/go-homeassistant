@@ -30,6 +30,10 @@ type (
 		Data      json.RawMessage `json:"data"`
 	}
 
+	Trigger struct {
+		Trigger json.RawMessage `json:"trigger"`
+	}
+
 	Config struct {
 		AllowlistExternalDirs []string               `json:"allowlist_external_dirs"`
 		AllowlistExternalUrls []string               `json:"allowlist_external_urls"`
@@ -97,7 +101,28 @@ type (
 
 	DomainServices map[string]Service
 
-	HassServices map[string]DomainServices
+	Services map[string]DomainServices
+
+	Component struct {
+		ComponentName string  `json:"component_name"`
+		Icon          *string `json:"icon"`
+		Title         *string `json:"title"`
+		Config        *struct {
+			Mode        *string `json:"mode"`
+			Ingress     *string `json:"ingress"`
+			PanelCustom *struct {
+				Name          string `json:"name"`
+				EmbedIframe   bool   `json:"embed_iframe"`
+				TrustExternal bool   `json:"trust_external"`
+				JSURL         string `json:"js_url"`
+			} `json:"panel_custom"`
+		} `json:"config"`
+		URLPath           string  `json:"url_path"`
+		RequireAdmin      bool    `json:"require_admin"`
+		ConfigPanelDomain *string `json:"config_panel_domain"`
+	}
+
+	Panels map[string]Component
 
 	User struct {
 		ID      string `json:"id"`
@@ -107,11 +132,11 @@ type (
 	}
 
 	ServiceTarget struct {
-		EntityID []string `json:"entity_id"`
-		DeviceID []string `json:"device_id"`
-		AreaID   []string `json:"area_id"`
-		FloorID  []string `json:"floor_id"`
-		LabelID  []string `json:"label_id"`
+		EntityID entity.IDList `json:"entity_id,omitempty"`
+		DeviceID []string      `json:"device_id,omitempty"`
+		AreaID   []string      `json:"area_id,omitempty"`
+		FloorID  []string      `json:"floor_id,omitempty"`
+		LabelID  []string      `json:"label_id,omitempty"`
 	}
 )
 
@@ -137,7 +162,8 @@ type (
 		NewState *Entity   `json:"new_state"`
 		OldState *Entity   `json:"old_state"`
 	}
-	Entities map[entity.ID]Entity
+	Entities    []Entity
+	EntitiesMap map[entity.ID]Entity
 )
 
 // UnmarshalAttributes parses the attributes into the provided structure.
@@ -147,4 +173,24 @@ func (s Entity) UnmarshalAttributes(v any) error {
 	}
 
 	return json.Unmarshal(s.Attributes, v)
+}
+
+func (e Entities) SortStates() EntitiesMap {
+	s := make(map[entity.ID]Entity, len(e))
+
+	for _, state := range e {
+		s[state.EntityID] = state
+	}
+
+	return s
+}
+
+// Exists checks if an entity exists in the Entities map.
+func (e EntitiesMap) Exists(id entity.ID) error {
+	_, exists := e[id]
+	if !exists {
+		return fmt.Errorf("entity id does not exist: %s", id)
+	}
+
+	return nil
 }

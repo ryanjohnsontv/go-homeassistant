@@ -2,9 +2,6 @@ package websocket
 
 import (
 	"encoding/json"
-	"fmt"
-
-	"github.com/ryanjohnsontv/go-homeassistant/websocket/constants"
 )
 
 type (
@@ -12,8 +9,8 @@ type (
 		SetID(id int64)
 	}
 	baseMessage struct {
-		ID   int64                 `json:"id"`
-		Type constants.MessageType `json:"type"`
+		ID   int64       `json:"id"`
+		Type messageType `json:"type"`
 	}
 )
 
@@ -21,46 +18,53 @@ func (b *baseMessage) SetID(id int64) {
 	b.ID = id
 }
 
-// Command Requests
-// type (
-// 	subscribeToTriggerRequest struct {
-// 		baseMessage
-// 		Trigger any `json:"trigger"`
-// 	}
-// )
+type messageType string
 
-// Command Responses
-type (
-	resultResponse struct {
-		baseMessage
-		Success bool           `json:"success"`
-		Error   *responseError `json:"error"`
-	}
-	responseError struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
-	}
-
-	// services struct {
-	// 	Service map[string]any
-	// }
-	// service struct {
-	// 	Name        string                 `mapstructure:"name"`
-	// 	Description string                 `mapstructure:"description"`
-	// 	Fields      map[string]any `mapstructure:"fields"`
-	// 	Target      struct {
-	// 		Entity []any `mapstructure:"entity"`
-	// 	} `mapstructure:"target"`
-	// }
-
-)
-
-func (re responseError) Error() string {
-	return fmt.Sprintf("error code: %s, message: %s", re.Code, re.Message)
+func (mt messageType) String() string {
+	return string(mt)
 }
 
-type (
-	Trigger struct {
-		Trigger json.RawMessage `json:"trigger"`
+func (mt *messageType) MarshalJSON() ([]byte, error) {
+	return json.Marshal(mt.String())
+}
+
+func (mt *messageType) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
 	}
+
+	*mt = messageType(str)
+
+	return nil
+}
+
+// Auth
+const (
+	messageTypeAuth         messageType = "auth"
+	messageTypeAuthInvalid  messageType = "auth_invalid"
+	messageTypeAuthOk       messageType = "auth_ok"
+	messageTypeAuthRequired messageType = "auth_required"
+)
+
+// Commands
+const (
+	messageTypeResult            messageType = "result"
+	messageTypeEvent             messageType = "event"
+	messageTypeFireEvent         messageType = "fire_event"
+	messageTypeSubscribeEvent    messageType = "subscribe_events"
+	messageTypeUnsubscribeEvents messageType = "unsubscribe_events"
+	messageTypeSubscribeTrigger  messageType = "subscribe_trigger"
+	messageTypeCallService       messageType = "call_service"
+	messageTypeGetConfig         messageType = "get_config"
+	messageTypeGetPanels         messageType = "get_panels"
+	messageTypeGetServices       messageType = "get_services"
+	messageTypeGetStates         messageType = "get_states"
+	messageTypeValidateConfig    messageType = "validate_config"
+)
+
+// Ping/Pong
+const (
+	messageTypePing messageType = "ping"
+	messageTypePong messageType = "pong"
 )
