@@ -2,12 +2,20 @@ package websocket
 
 import (
 	"encoding/json"
+	"fmt"
+	"time"
 
 	"github.com/ryanjohnsontv/go-homeassistant/shared/types"
+	"github.com/ryanjohnsontv/go-homeassistant/shared/utils"
 	"github.com/ryanjohnsontv/go-homeassistant/websocket/constants"
 )
 
-func (c *Client) SubscribeToEvent(eventType string, f func(*types.HassEvent)) error {
+type subscribeToEventRequest struct {
+	baseMessage
+	EventType string `json:"event_type,omitempty"`
+}
+
+func (c *Client) SubscribeToEvent(eventType string, f func(types.Event)) error {
 	request := subscribeToEventRequest{
 		baseMessage: baseMessage{
 			Type: constants.MessageTypeSubscribeEvent,
@@ -53,6 +61,12 @@ func (c *Client) SubscribeToEvent(eventType string, f func(*types.HassEvent)) er
 // 	return nil
 // }
 
+type fireEventRequest struct {
+	baseMessage
+	EventType string `json:"event_type"`
+	EventData any    `json:"event_data,omitempty"`
+}
+
 func (c *Client) FireEvent(eventType string, eventData any) (types.Context, error) {
 	request := fireEventRequest{
 		baseMessage: baseMessage{
@@ -81,7 +95,15 @@ func (c *Client) FireEvent(eventType string, eventData any) (types.Context, erro
 	return response, nil
 }
 
-func (c *Client) CallService(domain, service string, serviceData, target any) (types.Context, error) {
+type callServiceMessage struct {
+	baseMessage
+	Domain      string              `json:"domain"`
+	Service     string              `json:"service"`
+	ServiceData any                 `json:"service_data,omitempty"`
+	Target      types.ServiceTarget `json:"target,omitempty"`
+}
+
+func (c *Client) CallService(domain, service string, serviceData any, target types.ServiceTarget) (types.Context, error) {
 	request := callServiceMessage{
 		baseMessage: baseMessage{
 			Type: constants.MessageTypeCallService,
@@ -93,9 +115,7 @@ func (c *Client) CallService(domain, service string, serviceData, target any) (t
 		request.ServiceData = serviceData
 	}
 
-	if target != nil {
-		request.Target = target
-	}
+	request.Target = target
 
 	var response types.Context
 
@@ -117,26 +137,30 @@ func (c *Client) CallService(domain, service string, serviceData, target any) (t
 	return response, nil
 }
 
-func (c *Client) GetStates() (map[string]State, error) {
+type getStatesResponse struct {
+	Result []types.Entity `json:"result"`
+}
+
+func (c *Client) GetStates() (types.Entities, error) {
 	request := baseMessage{
 		Type: constants.MessageTypeGetStates,
 	}
 
 	message, err := c.cmdResponse(&request)
 	if err != nil {
-		c.logger.Error("failed to get states: %w", err)
+		c.logger.Error("failed to get states: %s", err.Error())
 
 		return nil, err
 	}
 
-	if c.stateVars != nil {
-		err = c.populateStateVars(message)
-		if err != nil {
-			c.logger.Error("failed to populate state vars: %w", err)
+	// if c.stateVars != nil {
+	// 	err = c.populateStateVars(message)
+	// 	if err != nil {
+	// 		c.logger.Error("failed to populate state vars: %w", err)
 
-			return nil, err
-		}
-	}
+	// 		return nil, err
+	// 	}
+	// }
 
 	var response getStatesResponse
 	if err := json.Unmarshal(message, &response); err != nil {
@@ -145,14 +169,18 @@ func (c *Client) GetStates() (map[string]State, error) {
 		return nil, err
 	}
 
-	c.States = SortStates(response.Result)
+	c.States = utils.SortStates(response.Result)
 
 	c.logger.Info("states retrieved")
 
 	return c.States, nil
 }
 
-func (c *Client) GetConfig() (types.HassConfig, error) {
+type getConfigResponse struct {
+	Result types.Config `json:"result"`
+}
+
+func (c *Client) GetConfig() (types.Config, error) {
 	request := baseMessage{
 		Type: constants.MessageTypeGetConfig,
 	}
@@ -162,18 +190,22 @@ func (c *Client) GetConfig() (types.HassConfig, error) {
 	message, err := c.cmdResponse(&request)
 	if err != nil {
 		c.logger.Error("failed to get config: %w", err)
-		return types.HassConfig{}, err
+		return types.Config{}, err
 	}
 
 	if err := json.Unmarshal(message, &response); err != nil {
 		c.logger.Error("failed to unmarshal response: %w", err)
 
-		return types.HassConfig{}, err
+		return types.Config{}, err
 	}
 
 	c.logger.Info("config retrieved")
 
 	return response.Result, nil
+}
+
+type getServicesResponse struct {
+	Result map[string]any `json:"result"`
 }
 
 func (c *Client) GetServices() (map[string]any, error) {
@@ -201,6 +233,30 @@ func (c *Client) GetServices() (map[string]any, error) {
 	return response.Result, nil
 }
 
+type (
+	getPanelsResponse struct {
+		Result map[string]Component `json:"result"`
+	}
+	Component struct {
+		ComponentName string  `json:"component_name"`
+		Icon          *string `json:"icon"`
+		Title         *string `json:"title"`
+		Config        *struct {
+			Mode        *string `json:"mode"`
+			Ingress     *string `json:"ingress"`
+			PanelCustom *struct {
+				Name          string `json:"name"`
+				EmbedIframe   bool   `json:"embed_iframe"`
+				TrustExternal bool   `json:"trust_external"`
+				JSURL         string `json:"js_url"`
+			} `json:"panel_custom"`
+		} `json:"config"`
+		URLPath           string  `json:"url_path"`
+		RequireAdmin      bool    `json:"require_admin"`
+		ConfigPanelDomain *string `json:"config_panel_domain"`
+	}
+)
+
 func (c *Client) GetPanels() (map[string]Component, error) {
 	request := baseMessage{
 		Type: constants.MessageTypeGetPanels,
@@ -227,7 +283,7 @@ func (c *Client) GetPanels() (map[string]Component, error) {
 }
 
 func (c *Client) cmdResponse(request cmdMessage) ([]byte, error) {
-	responseChan := make(chan []byte)
+	responseChan := make(chan []byte, 1)
 
 	id := c.getNextID()
 	request.SetID(id)
@@ -236,26 +292,37 @@ func (c *Client) cmdResponse(request cmdMessage) ([]byte, error) {
 	c.resultChan[id] = responseChan
 	c.mu.Unlock()
 
-	if err := c.write(request); err != nil {
-		c.logger.Error("failed to write request: %w", err)
+	defer func() {
+		c.mu.Lock()
+		delete(c.resultChan, id)
+		c.mu.Unlock()
+		close(responseChan)
+	}()
 
-		return nil, err
-	}
-	// Listening for the response from the server.
-	message := <-responseChan
+	if err := c.wsConn.WriteJSON(request); err != nil {
+		// c.reconnectChan <- true
+		c.logger.Error("error sending message: %v", request)
 
-	var response resultResponse
-
-	if err := json.Unmarshal(message, &response); err != nil {
-		c.logger.Error("failed to unmarshal response: %w", err)
-
-		return nil, err
+		return nil, fmt.Errorf("error sending message: %v\nerror: %w", request, err)
 	}
 
-	if !response.Success {
-		c.logger.Error("command failed. error_code: %s. error_message: %s", response.Error.Code, response.Error.Message)
-		return nil, response.Error
-	}
+	select {
+	case message := <-responseChan:
+		var response resultResponse
+		if err := json.Unmarshal(message, &response); err != nil {
+			c.logger.Error("failed to unmarshal response: %w", err)
+			return nil, err
+		}
 
-	return message, nil
+		if !response.Success {
+			c.logger.Error("command failed. error_code: %s. error_message: %s", response.Error.Code, response.Error.Message)
+			return nil, response.Error
+		}
+
+		return message, nil
+
+	case <-time.After(c.timeout):
+		c.logger.Error("response timeout for request ID: %d", id)
+		return nil, fmt.Errorf("response timeout for request ID: %d", id)
+	}
 }

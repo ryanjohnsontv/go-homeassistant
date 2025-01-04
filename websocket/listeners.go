@@ -4,6 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+
+	"github.com/ryanjohnsontv/go-homeassistant/shared/constants/domains"
+	"github.com/ryanjohnsontv/go-homeassistant/shared/entity"
+	"github.com/ryanjohnsontv/go-homeassistant/shared/types"
 )
 
 type (
@@ -55,7 +59,7 @@ func IgnoreStatesEqual() FilterOption {
 	}
 }
 
-func (c *Client) AddEntityListener(entityID string, f func(*StateChange), opts ...FilterOption) error {
+func (c *Client) AddEntityListener(entityID entity.ID, f func(*types.StateChange), opts ...FilterOption) error {
 	if _, exists := c.States[entityID]; !exists {
 		return fmt.Errorf("entity id does not exist: %s", entityID)
 	}
@@ -76,7 +80,7 @@ func (c *Client) AddEntityListener(entityID string, f func(*StateChange), opts .
 	return nil
 }
 
-func (c *Client) AddEntitiesListener(entityIDs []string, f func(*StateChange), opts ...FilterOption) error {
+func (c *Client) AddEntitiesListener(entityIDs []entity.ID, f func(*types.StateChange), opts ...FilterOption) error {
 	filters := &filterOptions{}
 	for _, option := range opts {
 		option(filters)
@@ -84,7 +88,6 @@ func (c *Client) AddEntitiesListener(entityIDs []string, f func(*StateChange), o
 
 	for _, entityID := range entityIDs {
 		if _, exists := c.States[entityID]; !exists {
-			c.logger.Debug("entity id does not exist: %s", entityID)
 			return fmt.Errorf("entity id does not exist: %s", entityID)
 		}
 
@@ -101,8 +104,8 @@ func (c *Client) AddEntitiesListener(entityIDs []string, f func(*StateChange), o
 }
 
 // Call a function whenever an entity event happens that matches your regex pattern
-func (c *Client) AddRegexEntityListener(regexPattern string, f func(*StateChange), opts ...FilterOption) error {
-	_, err := regexp.Compile(regexPattern)
+func (c *Client) AddRegexEntityListener(regexPattern string, f func(*types.StateChange), opts ...FilterOption) error {
+	pattern, err := regexp.Compile(regexPattern)
 	if err != nil {
 		return fmt.Errorf("invalid regex pattern: %w", err)
 	}
@@ -117,7 +120,7 @@ func (c *Client) AddRegexEntityListener(regexPattern string, f func(*StateChange
 		FilterOptions: *filters,
 	}
 
-	c.entityListeners[regexPattern] = append(c.entityListeners[regexPattern], listener)
+	c.regexEntityListeners[pattern] = append(c.regexEntityListeners[pattern], listener)
 	c.logger.Debug("added regex entity listener pattern %s", regexPattern)
 
 	return nil
@@ -135,46 +138,47 @@ func (c *Client) AddRegexEntityListener(regexPattern string, f func(*StateChange
 // }
 
 func (c *Client) updateState(input []byte) {
-	var msg StateChange
+	var msg types.StateChange
 
 	if err := json.Unmarshal(input, &msg); err != nil {
 		c.logger.Error("error decoding state change for update: input %s\nerror: %w", string(input), err)
 		return
 	}
 
-	if val, exists := c.stateVars[msg.EntityID]; exists {
-		if err := json.Unmarshal(input, val); err != nil {
-			c.logger.Error("error decoding state change for update: input %s\nerror: %w", string(input), err)
-			return
-		}
-	}
+	// if val, exists := c.stateVars[msg.EntityID]; exists {
+	// 	if err := json.Unmarshal(input, val); err != nil {
+	// 		c.logger.Error("error decoding state change for update: input %s\nerror: %w", string(input), err)
+	// 		return
+	// 	}
+	// }
 
 	c.mu.Lock()
-	c.States[msg.EntityID] = msg.NewState
+	c.States[msg.EntityID] = *msg.NewState
 	c.mu.Unlock()
 
 	go c.entityIDCallbackTrigger(&msg)
 	go c.regexCallbackTrigger(&msg)
-	go c.checkDateTimeEntity(msg)
+	go c.checkDateTimeEntity(&msg)
 }
 
-func (c *Client) entityIDCallbackTrigger(msg *StateChange) {
+func (c *Client) entityIDCallbackTrigger(msg *types.StateChange) {
 	if entityListeners, exists := c.entityListeners[msg.EntityID]; exists {
-		for _, entityListener := range entityListeners {
-			go c.triggerCallback(msg, entityListener)
+		go c.triggerCallback(msg, entityListeners...)
+	}
+}
+
+func (c *Client) regexCallbackTrigger(msg *types.StateChange) {
+	for pattern, entityListeners := range c.regexEntityListeners {
+		if pattern.MatchString(msg.EntityID.String()) {
+			go c.triggerCallback(msg, entityListeners...)
 		}
 	}
 }
 
-func (c *Client) regexCallbackTrigger(msg *StateChange) {
-	for pattern, entityListeners := range c.regexEntityListeners {
-		c.matchRegex(pattern, entityListeners, msg)
-	}
-}
-
-func (c *Client) checkDateTimeEntity(msg StateChange) {
-	if GetEntityDomain(msg.EntityID) != "input_datetime" {
-		return
+// If the state of a datetime entity used for a trigger is changed, this updates it.
+func (c *Client) checkDateTimeEntity(msg *types.StateChange) {
+	switch msg.EntityID.Domain() {
+	case domains.Date, domains.DateTime, domains.InputDatetime:
 	}
 }
 
@@ -197,44 +201,39 @@ func (c *Client) checkDateTimeEntity(msg StateChange) {
 // 	}
 // }
 
-func (c *Client) matchRegex(pattern string, entityListeners []entityListener, msg *StateChange) {
-	re, _ := regexp.Compile(pattern)
-	if re.MatchString(msg.EntityID) {
-		for _, entityListener := range entityListeners {
-			go c.triggerCallback(msg, entityListener)
-		}
+func (c *Client) triggerCallback(msg *types.StateChange, els ...entityListener) {
+	for _, el := range els {
+		go func(el entityListener) {
+			if shouldTriggerListener(msg, el.FilterOptions) {
+				el.callback(msg)
+				c.logger.Debug("triggered entity callback function for %s: %v", msg.EntityID, msg)
+			}
+		}(el)
 	}
 }
 
-func (c *Client) triggerCallback(msg *StateChange, el entityListener) {
-	if msg.shouldTriggerListener(el.FilterOptions) {
-		c.logger.Debug("triggering entity callback function for %s: %w", msg.EntityID, msg)
-		el.callback(msg)
-	}
-}
-
-func (m *StateChange) shouldTriggerListener(opts filterOptions) bool { // nolint:gocyclo
-	if opts.IgnorePreviousNonExistent && m.OldState == nil {
+func shouldTriggerListener(state *types.StateChange, opts filterOptions) bool { // nolint:gocyclo
+	if opts.IgnorePreviousNonExistent && state.OldState == nil {
 		return false
 	}
 
-	if opts.IgnorePreviousUnknown && m.OldState.State.unknown {
+	if opts.IgnorePreviousUnknown && state.OldState.State.IsUnknown() {
 		return false
 	}
 
-	if opts.IgnorePreviousUnavail && m.OldState.State.unavailable {
+	if opts.IgnorePreviousUnavail && state.OldState.State.IsUnavailable() {
 		return false
 	}
 
-	if opts.IgnoreUnknown && m.NewState.State.unknown {
+	if opts.IgnoreUnknown && state.NewState.State.IsUnknown() {
 		return false
 	}
 
-	if opts.IgnoreUnavailable && m.NewState.State.unavailable {
+	if opts.IgnoreUnavailable && state.NewState.State.IsUnavailable() {
 		return false
 	}
 
-	if opts.IgnoreCurrentEqualsPrev && m.OldState.State.State == m.NewState.State.State {
+	if opts.IgnoreCurrentEqualsPrev && state.OldState.State == state.NewState.State {
 		return false
 	}
 

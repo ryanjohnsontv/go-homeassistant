@@ -3,10 +3,7 @@ package websocket
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
-	"time"
 
-	"github.com/ryanjohnsontv/go-homeassistant/shared/types"
 	"github.com/ryanjohnsontv/go-homeassistant/websocket/constants"
 )
 
@@ -25,30 +22,12 @@ func (b *baseMessage) SetID(id int64) {
 }
 
 // Command Requests
-type (
-	subscribeToEventRequest struct {
-		baseMessage
-		EventType string `json:"event_type,omitempty"`
-	}
-
-	// subscribeToTriggerRequest struct {
-	// 	baseMessage
-	// 	Trigger any `json:"trigger"`
-	// }
-	fireEventRequest struct {
-		baseMessage
-		EventType string `json:"event_type"`
-		EventData any    `json:"event_data,omitempty"`
-	}
-
-	callServiceMessage struct {
-		baseMessage
-		Domain      string `json:"domain"`
-		Service     string `json:"service"`
-		ServiceData any    `json:"service_data,omitempty"`
-		Target      any    `json:"target,omitempty"`
-	}
-)
+// type (
+// 	subscribeToTriggerRequest struct {
+// 		baseMessage
+// 		Trigger any `json:"trigger"`
+// 	}
+// )
 
 // Command Responses
 type (
@@ -62,17 +41,6 @@ type (
 		Message string `json:"message"`
 	}
 
-	getStatesResponse struct {
-		Result []State `json:"result"`
-	}
-
-	getConfigResponse struct {
-		Result types.HassConfig `json:"result"`
-	}
-
-	getServicesResponse struct {
-		Result map[string]any `json:"result"`
-	}
 	// services struct {
 	// 	Service map[string]any
 	// }
@@ -85,27 +53,6 @@ type (
 	// 	} `mapstructure:"target"`
 	// }
 
-	getPanelsResponse struct {
-		Result map[string]Component `json:"result"`
-	}
-	Component struct {
-		ComponentName string  `json:"component_name"`
-		Icon          *string `json:"icon"`
-		Title         *string `json:"title"`
-		Config        *struct {
-			Mode        *string `json:"mode"`
-			Ingress     *string `json:"ingress"`
-			PanelCustom *struct {
-				Name          string `json:"name"`
-				EmbedIframe   bool   `json:"embed_iframe"`
-				TrustExternal bool   `json:"trust_external"`
-				JSURL         string `json:"js_url"`
-			} `json:"panel_custom"`
-		} `json:"config"`
-		URLPath           string  `json:"url_path"`
-		RequireAdmin      bool    `json:"require_admin"`
-		ConfigPanelDomain *string `json:"config_panel_domain"`
-	}
 )
 
 func (re responseError) Error() string {
@@ -113,239 +60,7 @@ func (re responseError) Error() string {
 }
 
 type (
-	Event struct {
-		EventType string          `json:"event_type"`
-		Data      json.RawMessage `json:"data"`
-		Origin    string          `json:"origin"`
-		TimeFired time.Time       `json:"time_fired"`
-		Context   types.Context   `json:"context"`
-	}
-
-	EntityState struct {
-		unavailable bool
-		unknown     bool
-		State       any
-	}
-
-	Attributes struct {
-		data map[string]any
-	}
-
-	State struct {
-		EntityID     string         `json:"entity_id"`
-		State        EntityState    `json:"state"`
-		Attributes   map[string]any `json:"attributes"`
-		LastChanged  *time.Time     `json:"last_changed"`
-		LastUpdated  *time.Time     `json:"last_updated"`
-		LastReported *time.Time     `json:"last_reported"`
-		Context      types.Context  `json:"context"`
-	}
-
-	StateChange struct {
-		EntityID string `json:"entity_id"`
-		NewState State  `json:"new_state"`
-		OldState *State `json:"old_state"`
-	}
-	States map[string]State
-
 	Trigger struct {
 		Trigger json.RawMessage `json:"trigger"`
 	}
 )
-
-func GetEntityDomain(eid string) string {
-	parts := strings.Split(eid, ".")
-	return parts[0]
-}
-
-func (s *EntityState) UnmarshalJSON(data []byte) error {
-	if err := json.Unmarshal(data, &s.State); err != nil {
-		return err
-	}
-
-	if stateStr, ok := s.State.(string); ok {
-		if stateStr == "unavailable" {
-			s.unavailable = true
-			return nil
-		} else if stateStr == "unknown" {
-			s.unknown = true
-			return nil
-		}
-	}
-
-	return nil
-}
-
-func (s *EntityState) IsUnavailable() bool {
-	return s.unavailable
-}
-
-func (s *EntityState) IsUnknown() bool {
-	return s.unknown
-}
-
-func (s *EntityState) ToBool() *bool {
-	if s.State != nil {
-		switch raw := s.State.(type) {
-		case string:
-			switch raw {
-			case "off", "false", "unlocked":
-				return boolPointer(false)
-			case "on", "true", "locked":
-				return boolPointer(true)
-			}
-		case bool:
-			return &raw
-		}
-	}
-
-	return nil
-}
-
-func (a *Attributes) Get(key string) any {
-	if value, exists := a.data[key]; exists {
-		return value
-	}
-
-	return nil
-}
-
-func (a *Attributes) GetString(key string) *string {
-	if val, exists := a.data[key]; exists {
-		if strVal, ok := val.(string); ok {
-			return &strVal
-		}
-	}
-
-	return nil
-}
-
-func (a *Attributes) GetBool(key string) *bool {
-	if val, exists := a.data[key]; exists {
-		if boolVal, ok := val.(bool); ok {
-			return &boolVal
-		}
-	}
-
-	return nil
-}
-
-func (a *Attributes) GetInt(key string) *int {
-	if val, exists := a.data[key]; exists {
-		switch v := val.(type) {
-		case int:
-			return &v
-		case float64:
-			intVal := int(v)
-			return &intVal
-		}
-	}
-
-	return nil
-}
-
-func (a *Attributes) GetFloat(key string) *float64 {
-	if val, exists := a.data[key]; exists {
-		if floatVal, ok := val.(float64); ok {
-			return &floatVal
-		}
-	}
-
-	return nil
-}
-
-func (a *Attributes) GetTime(key, layout string) (*time.Time, error) {
-	if str := a.GetString(key); str != nil {
-		timeConv, err := time.Parse(layout, *str)
-		if err != nil {
-			return nil, err
-		}
-
-		return &timeConv, nil
-	}
-
-	return nil, nil
-}
-
-func (a *Attributes) GetIntSlice(key string) *[]int {
-	if val, exists := a.data[key]; exists {
-		if slice, ok := val.([]any); ok {
-			intSlice := make([]int, len(slice))
-
-			for i, v := range slice {
-				switch v := v.(type) {
-				case int:
-					intSlice[i] = v
-				case float64:
-					intSlice[i] = int(v)
-				default:
-					return nil
-				}
-			}
-
-			return &intSlice
-		}
-	}
-
-	return nil
-}
-
-func (a *Attributes) GetFloat64Slice(key string) *[]float64 {
-	if val, exists := a.data[key]; exists {
-		if slice, ok := val.([]any); ok {
-			floatSlice := make([]float64, len(slice))
-
-			for i, v := range slice {
-				if floatVal, ok := v.(float64); ok {
-					floatSlice[i] = floatVal
-				} else {
-					return nil
-				}
-			}
-
-			return &floatSlice
-		}
-	}
-
-	return nil
-}
-
-func (a *Attributes) GetStringSlice(key string) *[]string {
-	if val, exists := a.data[key]; exists {
-		if slice, ok := val.([]any); ok {
-			stringSlice := make([]string, len(slice))
-
-			for i, v := range slice {
-				if strVal, ok := v.(string); ok {
-					stringSlice[i] = strVal
-				} else {
-					return nil
-				}
-			}
-
-			return &stringSlice
-		}
-	}
-
-	return nil
-}
-
-func (a *Attributes) GetBoolSlice(key string) *[]bool {
-	if val, exists := a.data[key]; exists {
-		if slice, ok := val.([]any); ok {
-			boolSlice := make([]bool, len(slice))
-
-			for i, v := range slice {
-				if boolVal, ok := v.(bool); ok {
-					boolSlice[i] = boolVal
-				} else {
-					return nil
-				}
-			}
-
-			return &boolSlice
-		}
-	}
-
-	return nil
-}

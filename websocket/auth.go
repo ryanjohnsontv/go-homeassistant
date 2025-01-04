@@ -7,14 +7,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ryanjohnsontv/go-homeassistant/shared"
+	"github.com/ryanjohnsontv/go-homeassistant/shared/version"
 	"github.com/ryanjohnsontv/go-homeassistant/websocket/constants"
 )
 
 type (
 	authResponse struct {
 		Type    constants.MessageType `json:"type"`
-		Version string                `json:"ha_version"`
+		Version version.Version       `json:"ha_version"`
 		Message *string               `json:"message"` // Only populated if auth data is incorrect (ex. Invalid Password)
 	}
 	authRequest struct {
@@ -32,8 +32,9 @@ func (c *Client) authenticate() error {
 	}
 
 	c.haVersion = resp.Version
+	c.logger.Debug("version: %s", c.haVersion.String())
 
-	if !shared.AtLeastHaVersion(c.haVersion, 2024, 1, 0) {
+	if !c.haVersion.Minimum(2024, 1) {
 		return ErrNotMinimumVersion
 	}
 

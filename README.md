@@ -1,6 +1,6 @@
 # go-homeassistant
 
-A single client for communicating with Home Assistant's REST and WebSocket APIs.
+Clients for communicating with Home Assistant's REST and WebSocket APIs.
 
 > :warning: **Under rapid and unplanned development**: This is a slow-maturing passion project!
 
@@ -54,7 +54,7 @@ func main() {
     }
     response, err := client.GetState("light.living_room")
     if err != nil {
-        fmt.Println("Error:", err)
+        fmt.Println(err)
         return
     }
     fmt.Println("Light state:", response)

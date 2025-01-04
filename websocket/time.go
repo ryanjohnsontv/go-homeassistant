@@ -2,6 +2,22 @@ package websocket
 
 import (
 	"time"
+
+	"github.com/ryanjohnsontv/go-homeassistant/shared/entity"
+)
+
+const (
+	dateOnly timeType = iota
+	timeOnly
+	dateTime
+)
+
+type (
+	dateTimeEntityTrigger struct {
+		callback func()
+		timeType timeType
+	}
+	timeType int
 )
 
 // TriggerDateTime initiates a ticker that triggers callbacks at specified times.
@@ -37,12 +53,12 @@ func (c *Client) triggerCallbacks(t time.Time) {
 }
 
 // executeCallbacks executes all callbacks associated with a specific time.
-func (c *Client) executeCallbacks(dateTimeMap map[string][]dateTimeEntityTrigger) {
+func (c *Client) executeCallbacks(dateTimeMap map[entity.ID][]dateTimeEntityTrigger) {
 	for entityID, functions := range dateTimeMap {
 		for _, eventTrigger := range functions {
 			c.logger.Debug("triggering datetime entity callback function for %s", entityID)
 
-			if eventTrigger.timeType == "time" {
+			if eventTrigger.timeType == timeOnly {
 				go eventTrigger.callback()
 			}
 		}

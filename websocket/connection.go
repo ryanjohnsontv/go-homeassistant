@@ -17,16 +17,14 @@ func (c *Client) getNextID() int64 {
 
 	c.msgID++
 
-	id := c.msgID
-
-	return id
+	return c.msgID
 }
 
 // Dial and configure websocket connection
 func (c *Client) connect() error {
 	dialer := websocket.DefaultDialer
 
-	conn, resp, err := dialer.Dial(c.wsURL.String(), nil)
+	conn, resp, err := dialer.Dial(c.wsURL, nil)
 	if err != nil {
 		c.logger.Error("unable to dial home assistant: %w", err)
 		resp.Body.Close()
@@ -68,6 +66,8 @@ func (c *Client) listen() {
 				c.logger.Error("error unmarshaling message: %w", err)
 			}
 
+			c.logger.Debug("received message: %+v", m)
+
 			switch m.Type {
 			case constants.MessageTypePong:
 				c.pongChan <- true
@@ -86,7 +86,7 @@ func (c *Client) listen() {
 func (c *Client) eventResponseHandler(id int64, msg []byte) {
 	if handler, exists := c.eventHandler[id]; exists {
 		var response struct {
-			Event types.HassEvent `json:"event"`
+			Event types.Event `json:"event"`
 		}
 
 		if err := json.Unmarshal(msg, &response); err != nil {
@@ -96,7 +96,7 @@ func (c *Client) eventResponseHandler(id int64, msg []byte) {
 		c.logger.Debug("received event message: %w", response)
 
 		if handler.Callback != nil {
-			go handler.Callback(&response.Event)
+			go handler.Callback(response.Event)
 		}
 
 		if response.Event.EventType == "state_changed" {
@@ -141,7 +141,7 @@ func (c *Client) startHeartbeat() {
 			var attempt int
 
 			for {
-				if err := c.Run(); err == nil {
+				if err := c.run(); err == nil {
 					attempt++
 					c.logger.Info("reconnect failed, trying again. attempt %d", attempt)
 					time.Sleep(5 * time.Second)
@@ -153,7 +153,7 @@ func (c *Client) startHeartbeat() {
 
 // Send message to websocket
 func (c *Client) write(msg cmdMessage) error {
-	c.logger.Debug("writing message: %w", msg)
+	c.logger.Debug("writing message: %+v", msg)
 
 	id := c.getNextID()
 	msg.SetID(id)

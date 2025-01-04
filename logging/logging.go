@@ -28,32 +28,24 @@ func (d *DefaultLogger) SetLevel(level LogLevel) {
 
 func (d *DefaultLogger) Debug(msg string, fields ...any) {
 	if d.level <= DebugLevel {
-		return
+		log.Printf("DEBUG: "+msg, fields...)
 	}
-
-	log.Printf("DEBUG: "+msg, fields...)
 }
 
 func (d *DefaultLogger) Info(msg string, fields ...any) {
 	if d.level <= InfoLevel {
-		return
+		log.Printf("INFO: "+msg, fields...)
 	}
-
-	log.Printf("INFO: "+msg, fields...)
 }
 
 func (d *DefaultLogger) Warn(msg string, fields ...any) {
 	if d.level <= WarnLevel {
-		return
+		log.Printf("WARN: "+msg, fields...)
 	}
-
-	log.Printf("WARN: "+msg, fields...)
 }
 
 func (d *DefaultLogger) Error(msg string, fields ...any) {
 	if d.level <= ErrorLevel {
-		return
+		log.Printf("ERROR: "+msg, fields...)
 	}
-
-	log.Printf("ERROR: "+msg, fields...)
 }

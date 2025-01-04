@@ -2,39 +2,38 @@ package websocket
 
 import (
 	"net/url"
+	"regexp"
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/ryanjohnsontv/go-homeassistant/logging"
+	"github.com/ryanjohnsontv/go-homeassistant/shared/entity"
 	"github.com/ryanjohnsontv/go-homeassistant/shared/types"
+	"github.com/ryanjohnsontv/go-homeassistant/shared/version"
 )
 
 type Client struct {
-	wsURL                   url.URL // Formatted Home Assistant websocket URL (ws://ha.local:8123/api/websocket)
-	accessToken             string  // Long-Lived Token from Home Assistant
-	haVersion               string
+	wsURL                   string // Formatted Home Assistant websocket URL (ws://ha.local:8123/api/websocket)
+	accessToken             string // Long-Lived Token from Home Assistant
+	secure                  bool
+	haVersion               version.Version
 	wsConn                  *websocket.Conn
+	timeout                 time.Duration
 	logger                  logging.Logger
 	msgID                   int64
 	eventHandler            map[int64]eventHandler
 	triggerHandler          map[int64][]triggerHandler
-	entityListeners         map[string][]entityListener
-	regexEntityListeners    map[string][]entityListener
-	dateTimeEntityListeners map[time.Time]map[string][]dateTimeEntityTrigger
+	entityListeners         map[entity.ID][]entityListener
+	regexEntityListeners    map[*regexp.Regexp][]entityListener
+	dateTimeEntityListeners map[time.Time]map[entity.ID][]dateTimeEntityTrigger
 	resultChan              map[int64]chan []byte
 	pongChan                chan bool
 	stopChan                chan bool
 	reconnectChan           chan bool
 	mu                      sync.Mutex
 	msgHistory              map[int64]cmdMessage
-	stateVars               map[string]any
-	States                  map[string]State
-}
-
-type Config struct {
-	Host        string // The host:port of your home assistant instance. (ex: homeassistant.local:8123)
-	AccessToken string // The log-lived access token generated in Home Assistant
+	States                  types.Entities
 }
 
 type (
@@ -42,44 +41,42 @@ type (
 
 	eventHandler struct {
 		EventType string
-		Callback  func(*types.HassEvent)
+		Callback  func(types.Event)
 	}
 	triggerHandler struct {
-		Callback func(*Trigger)
+		Callback func(Trigger)
 	}
 	entityListener struct {
-		callback      func(*StateChange)
+		callback      func(*types.StateChange)
 		FilterOptions filterOptions
-	}
-	dateTimeEntityTrigger struct {
-		callback func()
-		timeType string
 	}
 )
 
-func NewClient(cfg Config, options ...ClientOption) (*Client, error) {
-	if cfg.Host == "" {
+func NewClient(host, accessToken string, options ...ClientOption) (*Client, error) {
+	if host == "" {
 		return nil, ErrMissingHAAddress
 	}
 
-	if cfg.AccessToken == "" {
+	if accessToken == "" {
 		return nil, ErrMissingToken
 	}
 
+	wsURL := url.URL{Host: host, Path: "/api/websocket", Scheme: "ws"}
+
 	c := &Client{
-		wsURL:                   url.URL{Host: cfg.Host, Path: "/api/websocket", Scheme: "ws"},
-		accessToken:             cfg.AccessToken,
+		accessToken:             accessToken,
+		timeout:                 10 * time.Second,
 		logger:                  &logging.DefaultLogger{},
 		eventHandler:            make(map[int64]eventHandler),
 		triggerHandler:          make(map[int64][]triggerHandler),
-		entityListeners:         make(map[string][]entityListener),
-		regexEntityListeners:    make(map[string][]entityListener),
-		dateTimeEntityListeners: make(map[time.Time]map[string][]dateTimeEntityTrigger),
+		entityListeners:         make(map[entity.ID][]entityListener),
+		regexEntityListeners:    make(map[*regexp.Regexp][]entityListener),
+		dateTimeEntityListeners: make(map[time.Time]map[entity.ID][]dateTimeEntityTrigger),
 		resultChan:              make(map[int64]chan []byte),
 		pongChan:                make(chan bool),
 		stopChan:                make(chan bool),
 		reconnectChan:           make(chan bool),
-		States:                  make(map[string]State),
+		States:                  make(types.Entities),
 		msgHistory:              make(map[int64]cmdMessage),
 	}
 
@@ -87,7 +84,13 @@ func NewClient(cfg Config, options ...ClientOption) (*Client, error) {
 		option(c)
 	}
 
-	return c, nil
+	if c.secure {
+		wsURL.Scheme = "wss"
+	}
+
+	c.wsURL = wsURL.String()
+
+	return c, c.run()
 }
 
 func WithCustomLogger(logger logging.Logger) ClientOption {
@@ -98,17 +101,11 @@ func WithCustomLogger(logger logging.Logger) ClientOption {
 
 func WithSecureConnection() ClientOption {
 	return func(c *Client) {
-		c.wsURL.Scheme = "wss"
+		c.secure = true
 	}
 }
 
-func WithCustomStateVars(states map[string]any) ClientOption {
-	return func(c *Client) {
-		c.stateVars = states
-	}
-}
-
-func (c *Client) Run() error {
+func (c *Client) run() error {
 	if err := c.connect(); err != nil {
 		return err
 	}
