@@ -76,15 +76,14 @@ import (
 )
 
 func main() {
-    client := websocket.NewClient("ws://homeassistant.local:8123/api/websocket", "your-access-token")
-    if err := client.Connect(); err != nil {
+    client, err := websocket.NewClient("ws://homeassistant.local:8123/api/websocket", "your-access-token")
+    if err != nil {
         fmt.Println("Error connecting to WebSocket:", err)
         return
     }
 
-    for message := range client.Listen() {
-        fmt.Println("Received message:", message)
-    }
+    fmt.Printf("States: %+v", client.States)
+    return nil
 }
 ```
 
