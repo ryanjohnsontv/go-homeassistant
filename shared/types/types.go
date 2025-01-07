@@ -3,10 +3,11 @@ package types
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ryanjohnsontv/go-homeassistant/shared/constants/config"
-	"github.com/ryanjohnsontv/go-homeassistant/shared/entity"
+	"github.com/ryanjohnsontv/go-homeassistant/shared/constants/domains"
 	"github.com/ryanjohnsontv/go-homeassistant/shared/state"
 	"github.com/ryanjohnsontv/go-homeassistant/shared/version"
 )
@@ -132,25 +133,15 @@ type (
 	}
 
 	ServiceTarget struct {
-		EntityID entity.IDList `json:"entity_id,omitempty"`
-		DeviceID []string      `json:"device_id,omitempty"`
-		AreaID   []string      `json:"area_id,omitempty"`
-		FloorID  []string      `json:"floor_id,omitempty"`
-		LabelID  []string      `json:"label_id,omitempty"`
+		EntityID []string `json:"entity_id,omitempty"`
+		DeviceID []string `json:"device_id,omitempty"`
+		AreaID   []string `json:"area_id,omitempty"`
+		FloorID  []string `json:"floor_id,omitempty"`
+		LabelID  []string `json:"label_id,omitempty"`
 	}
 )
 
 type (
-	Entity struct {
-		EntityID     entity.ID       `json:"entity_id"`
-		State        state.Value     `json:"state"`
-		Attributes   json.RawMessage `json:"attributes"`
-		LastChanged  time.Time       `json:"last_changed"`
-		LastUpdated  time.Time       `json:"last_updated"`
-		LastReported time.Time       `json:"last_reported"`
-		Context      Context         `json:"context"`
-	}
-
 	StateChangedEvent struct {
 		EventBase
 		EventType string      `json:"event_type"`
@@ -158,25 +149,20 @@ type (
 	}
 
 	StateChange struct {
-		EntityID entity.ID `json:"entity_id"`
-		NewState *Entity   `json:"new_state"`
-		OldState *Entity   `json:"old_state"`
+		EntityID string  `json:"entity_id"`
+		NewState *Entity `json:"new_state"`
+		OldState *Entity `json:"old_state"`
 	}
-	Entities    []Entity
-	EntitiesMap map[entity.ID]Entity
 )
 
-// UnmarshalAttributes parses the attributes into the provided structure.
-func (s Entity) UnmarshalAttributes(v any) error {
-	if s.Attributes == nil {
-		return fmt.Errorf("attributes are nil")
-	}
-
-	return json.Unmarshal(s.Attributes, v)
+func (s StateChange) GetDomain() domains.Domain {
+	return getDomain(s.EntityID)
 }
 
-func (e Entities) SortStates() EntitiesMap {
-	s := make(map[entity.ID]Entity, len(e))
+type Entities []Entity
+
+func (e Entities) ToMap() EntitiesMap {
+	s := make(map[string]Entity, len(e))
 
 	for _, state := range e {
 		s[state.EntityID] = state
@@ -185,12 +171,102 @@ func (e Entities) SortStates() EntitiesMap {
 	return s
 }
 
+type EntitiesMap map[string]Entity
+
 // Exists checks if an entity exists in the Entities map.
-func (e EntitiesMap) Exists(id entity.ID) error {
+func (e EntitiesMap) Exists(id string) error {
 	_, exists := e[id]
 	if !exists {
 		return fmt.Errorf("entity id does not exist: %s", id)
 	}
 
 	return nil
+}
+
+type Entity struct {
+	EntityID     string          `json:"entity_id"`
+	State        state.Value     `json:"state"`
+	Attributes   json.RawMessage `json:"attributes"`
+	LastChanged  time.Time       `json:"last_changed"`
+	LastUpdated  time.Time       `json:"last_updated"`
+	LastReported time.Time       `json:"last_reported"`
+	Context      Context         `json:"context"`
+}
+
+// UnmarshalAttributes parses the attributes into the provided structure.
+func (e Entity) UnmarshalAttributes(v any) error {
+	if e.Attributes == nil {
+		return fmt.Errorf("attributes are nil")
+	}
+
+	return json.Unmarshal(e.Attributes, v)
+}
+
+func (e Entity) GetDomain() domains.Domain {
+	return getDomain(e.EntityID)
+}
+
+func getDomain(entityID string) domains.Domain {
+	parts := strings.Split(entityID, ".")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+
+	return domains.Domain(parts[0])
+}
+
+type (
+	ActionCaller interface {
+		CallServiceHelper(domain domains.Domain, service string, serviceData any, target ServiceTarget) error
+	}
+
+	// ServiceTargetBuilder is used to construct a ServiceTarget with optional fields.
+	ServiceTargetBuilder struct {
+		Target ServiceTarget
+		Caller ActionCaller
+		Action string
+		Domain domains.Domain
+		Data   any
+	}
+)
+
+// Areas sets the AreaID field in the ServiceTarget.
+func (b *ServiceTargetBuilder) Areas(areaIDs ...string) *ServiceTargetBuilder {
+	b.Target.AreaID = append(b.Target.AreaID, areaIDs...)
+	return b
+}
+
+// Entities sets the EntityID field in the ServiceTarget.
+func (b *ServiceTargetBuilder) Entities(entityIDs ...string) *ServiceTargetBuilder {
+	b.Target.EntityID = append(b.Target.EntityID, entityIDs...)
+	return b
+}
+
+// Devices sets the DeviceID field in the ServiceTarget.
+func (b *ServiceTargetBuilder) Devices(deviceIDs ...string) *ServiceTargetBuilder {
+	b.Target.DeviceID = append(b.Target.DeviceID, deviceIDs...)
+	return b
+}
+
+// Floors sets the FloorID field in the ServiceTarget.
+func (b *ServiceTargetBuilder) Floors(floorIDs ...string) *ServiceTargetBuilder {
+	b.Target.FloorID = append(b.Target.FloorID, floorIDs...)
+	return b
+}
+
+// Labels sets the LabelID field in the ServiceTarget.
+func (b *ServiceTargetBuilder) Labels(labelIDs ...string) *ServiceTargetBuilder {
+	b.Target.LabelID = append(b.Target.LabelID, labelIDs...)
+	return b
+}
+
+// ServiceData sets the optional service data for the service call.
+func (b *ServiceTargetBuilder) ServiceData(data any) *ServiceTargetBuilder {
+	b.Data = data
+	return b
+}
+
+// Execute sends the service call to Home Assistant.
+func (b *ServiceTargetBuilder) Execute() error {
+	return b.Caller.CallServiceHelper(b.Domain, b.Action, b.Data, b.Target)
 }

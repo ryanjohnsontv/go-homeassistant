@@ -1,6 +1,5 @@
 // A Go client for communicating with Home Assistant's REST API.
 // https://developers.home-assistant.io/docs/api/rest
-
 package rest
 
 import (
@@ -16,17 +15,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ryanjohnsontv/go-homeassistant/logging"
 	"github.com/ryanjohnsontv/go-homeassistant/shared/constants/domains"
-	"github.com/ryanjohnsontv/go-homeassistant/shared/entity"
 	"github.com/ryanjohnsontv/go-homeassistant/shared/types"
+	"github.com/ryanjohnsontv/go-homeassistant/shared/utils"
 )
 
 type (
 	Client struct {
 		apiURL           *url.URL // Formatted Home Assistant REST API URL (http://ha.local:8123/api)
-		bearerToken      string   // Long-Lived Token from Home Assistant
-		httpClient       *http.Client
-		streamHTTPClient *http.Client // Client for event streams
+		apiURLString     string
+		bearerToken      string          // Long-Lived Token from Home Assistant
+		httpClient       *http.Client    // HTTP client
+		streamHTTPClient *http.Client    // Client for event streams
+		ctx              context.Context // Defaults to context.Background()
+		logger           logging.Logger  // Optional custom logger
 	}
 
 	ClientOption func(*Client)
@@ -41,16 +44,16 @@ func NewClient(host, accessToken string, options ...ClientOption) (*Client, erro
 		return nil, errors.New("access token is required")
 	}
 
-	apiURL, err := normalizeURL(host)
+	apiURL, err := utils.GetHTTPURL(host)
 	if err != nil {
 		return nil, fmt.Errorf("invalid home assistant host: %w", err)
 	}
 
-	apiURL.Path = "/api/"
-
 	c := &Client{
 		apiURL:      apiURL,
 		bearerToken: "Bearer " + accessToken,
+		ctx:         context.Background(),
+		logger:      logging.NewLogger(),
 		httpClient: &http.Client{
 			Transport: &http.Transport{
 				MaxIdleConns:       100,
@@ -73,28 +76,35 @@ func NewClient(host, accessToken string, options ...ClientOption) (*Client, erro
 		option(c)
 	}
 
+	c.apiURLString = c.apiURL.String()
+
+	c.logger.Debug("using %s as api url", c.apiURL)
+
 	return c, nil
 }
 
-func normalizeURL(rawURL string) (*url.URL, error) {
-	if !strings.Contains(rawURL, "://") {
-		rawURL = "http://" + rawURL
+func WithAPIPath(path string) ClientOption {
+	return func(c *Client) {
+		c.apiURL.Path = path
 	}
+}
 
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil {
-		return nil, err
+func WithContext(ctx context.Context) ClientOption {
+	return func(c *Client) {
+		c.ctx = ctx
 	}
+}
 
-	if parsedURL.Scheme == "" {
-		parsedURL.Scheme = "http"
+func WithHTTPClient(client *http.Client) ClientOption {
+	return func(c *Client) {
+		c.httpClient = client
 	}
+}
 
-	if parsedURL.Port() == "" {
-		parsedURL.Host = fmt.Sprintf("%s:8123", parsedURL.Hostname())
+func WithLogger(logger logging.Logger) ClientOption {
+	return func(c *Client) {
+		c.logger = logger
 	}
-
-	return parsedURL, nil
 }
 
 func WithSecureConnection() ClientOption {
@@ -103,19 +113,7 @@ func WithSecureConnection() ClientOption {
 	}
 }
 
-func WithCustomAPIPath(path string) ClientOption {
-	return func(c *Client) {
-		c.apiURL.Path = path
-	}
-}
-
-func WithCustomHTTPClient(client *http.Client) ClientOption {
-	return func(c *Client) {
-		c.httpClient = client
-	}
-}
-
-func WithCustomStreamHTTPClient(client *http.Client) ClientOption {
+func WithStreamHTTPClient(client *http.Client) ClientOption {
 	return func(c *Client) {
 		c.streamHTTPClient = client
 	}
@@ -143,8 +141,12 @@ func (c *Client) newRequest(ctx context.Context, method, path string, body any) 
 		}
 
 		bodyReader = bytes.NewBuffer(data)
+
+		c.logger.Debug("sending %s request to %s with body: %+v", method, fullURL, body)
 	} else {
 		bodyReader = http.NoBody
+
+		c.logger.Debug("sending %s request to %s with no body", method, fullURL)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, fullURL, bodyReader)
@@ -199,7 +201,12 @@ type apiResponse struct {
 }
 
 // GetHealth returns an error if the API is unhealthy.
-func (c *Client) GetHealth(ctx context.Context) error {
+func (c *Client) GetHealth() error {
+	return c.GetHealthWithContext(c.ctx)
+}
+
+// GetHealthWithContext returns an error if the API is unhealthy.
+func (c *Client) GetHealthWithContext(ctx context.Context) error {
 	req, err := c.newRequest(ctx, http.MethodGet, "", nil)
 	if err != nil {
 		return err
@@ -214,7 +221,12 @@ func (c *Client) GetHealth(ctx context.Context) error {
 }
 
 // GetConfig gets the Home Assistant configuration.
-func (c *Client) GetConfig(ctx context.Context) (types.Config, error) {
+func (c *Client) GetConfig() (types.Config, error) {
+	return c.GetConfigWithContext(c.ctx)
+}
+
+// GetConfigWithContext gets the Home Assistant configuration.
+func (c *Client) GetConfigWithContext(ctx context.Context) (types.Config, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, "config", nil)
 	if err != nil {
 		return types.Config{}, err
@@ -234,7 +246,12 @@ type Event struct {
 }
 
 // GetEvents gets a list of all events in Home Assistant.
-func (c *Client) GetEvents(ctx context.Context) ([]Event, error) {
+func (c *Client) GetEvents() ([]Event, error) {
+	return c.GetEventsWithContext(c.ctx)
+}
+
+// GetEventsWithContext gets a list of all events in Home Assistant.
+func (c *Client) GetEventsWithContext(ctx context.Context) ([]Event, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, "events", nil)
 	if err != nil {
 		return nil, err
@@ -268,7 +285,12 @@ type Services struct {
 }
 
 // GetServices gets a list of all services in Home Assistant.
-func (c *Client) GetServices(ctx context.Context) ([]Services, error) {
+func (c *Client) GetServices() ([]Services, error) {
+	return c.GetServicesWithContext(c.ctx)
+}
+
+// GetServicesWithContext gets a list of all services in Home Assistant.
+func (c *Client) GetServicesWithContext(ctx context.Context) ([]Services, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, "services", nil)
 	if err != nil {
 		return nil, err
@@ -294,7 +316,19 @@ type (
 )
 
 // GetHistory gets the history of events and state changes in Home Assistant.
-func (c *Client) GetHistory(ctx context.Context, entityIDs []string, opts GetHistoryOptions) (History, error) {
+func (c *Client) GetHistory(
+	entityIDs []string,
+	opts GetHistoryOptions,
+) (History, error) {
+	return c.GetHistoryWithContext(c.ctx, entityIDs, opts)
+}
+
+// GetHistoryWithContext gets the history of events and state changes in Home Assistant.
+func (c *Client) GetHistoryWithContext(
+	ctx context.Context,
+	entityIDs []string,
+	opts GetHistoryOptions,
+) (History, error) {
 	path := "history/period"
 	if !opts.Timestamp.IsZero() {
 		path += "/" + url.QueryEscape(opts.Timestamp.Format(time.RFC3339))
@@ -337,7 +371,7 @@ type (
 	LogbookEntry struct {
 		ContextUserID *string        `json:"context_user_id"`
 		Domain        domains.Domain `json:"domain"`
-		EntityID      entity.ID      `json:"entity_id"`
+		EntityID      string         `json:"entity_id"`
 		Message       string         `json:"message"`
 		Name          string         `json:"name"`
 		When          time.Time      `json:"when"`
@@ -350,7 +384,15 @@ type (
 )
 
 // GetLogbook gets the logbook of events in Home Assistant.
-func (c *Client) GetLogbook(ctx context.Context, opts GetLogbookOptions) ([]LogbookEntry, error) {
+func (c *Client) GetLogbook(opts GetLogbookOptions) ([]LogbookEntry, error) {
+	return c.GetLogbookWithContext(c.ctx, opts)
+}
+
+// GetLogbookWithContext gets the logbook of events in Home Assistant.
+func (c *Client) GetLogbookWithContext(
+	ctx context.Context,
+	opts GetLogbookOptions,
+) ([]LogbookEntry, error) {
 	path := "logbook"
 	if !opts.Timestamp.IsZero() {
 		path += "/" + opts.Timestamp.Format(time.RFC3339)
@@ -379,7 +421,12 @@ func (c *Client) GetLogbook(ctx context.Context, opts GetLogbookOptions) ([]Logb
 }
 
 // GetStates gets a list of all states in Home Assistant.
-func (c *Client) GetStates(ctx context.Context) ([]types.Entity, error) {
+func (c *Client) GetStates() ([]types.Entity, error) {
+	return c.GetStatesWithContext(c.ctx)
+}
+
+// GetStatesWithContext gets a list of all states in Home Assistant.
+func (c *Client) GetStatesWithContext(ctx context.Context) ([]types.Entity, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, "states", nil)
 	if err != nil {
 		return nil, err
@@ -394,7 +441,12 @@ func (c *Client) GetStates(ctx context.Context) ([]types.Entity, error) {
 }
 
 // GetState gets the state of an entity in Home Assistant.
-func (c *Client) GetState(ctx context.Context, entityID string) (types.Entity, error) {
+func (c *Client) GetState(entityID string) (types.Entity, error) {
+	return c.GetStateWithContext(c.ctx, entityID)
+}
+
+// GetStateWithContext gets the state of an entity in Home Assistant.
+func (c *Client) GetStateWithContext(ctx context.Context, entityID string) (types.Entity, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, "states/"+entityID, nil)
 	if err != nil {
 		return types.Entity{}, err
@@ -409,7 +461,12 @@ func (c *Client) GetState(ctx context.Context, entityID string) (types.Entity, e
 }
 
 // GetErrorLog gets the error log in Home Assistant.
-func (c *Client) GetErrorLog(ctx context.Context) ([]map[string]any, error) {
+func (c *Client) GetErrorLog() ([]map[string]any, error) {
+	return c.GetErrorLogWithContext(c.ctx)
+}
+
+// GetErrorLogWithContext gets the error log in Home Assistant.
+func (c *Client) GetErrorLogWithContext(ctx context.Context) ([]map[string]any, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, "error_log", nil)
 	if err != nil {
 		return nil, err
@@ -424,7 +481,12 @@ func (c *Client) GetErrorLog(ctx context.Context) ([]map[string]any, error) {
 }
 
 // GetCameraProxy gets a proxy URL for a camera in Home Assistant.
-func (c *Client) GetCameraProxy(ctx context.Context, entityID string) (string, error) {
+func (c *Client) GetCameraProxy(entityID string) (string, error) {
+	return c.GetCameraProxyWithContext(c.ctx, entityID)
+}
+
+// GetCameraProxyWithContext gets a proxy URL for a camera in Home Assistant.
+func (c *Client) GetCameraProxyWithContext(ctx context.Context, entityID string) (string, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, "camera_proxy/"+entityID, nil)
 	if err != nil {
 		return "", err
@@ -444,12 +506,17 @@ func (c *Client) GetCameraProxy(ctx context.Context, entityID string) (string, e
 }
 
 type Calendars struct {
-	EntityID entity.ID `json:"entity_id"`
-	Name     string    `json:"name"`
+	EntityID string `json:"entity_id"`
+	Name     string `json:"name"`
 }
 
 // GetCalendars gets a list of calendar entities in Home Assistant.
-func (c *Client) GetCalendars(ctx context.Context, calendarID string) ([]Calendars, error) {
+func (c *Client) GetCalendars(calendarID string) ([]Calendars, error) {
+	return c.GetCalendarsWithContext(c.ctx, calendarID)
+}
+
+// GetCalendarsWithContext gets a list of calendar entities in Home Assistant.
+func (c *Client) GetCalendarsWithContext(ctx context.Context, calendarID string) ([]Calendars, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, "calendars/"+calendarID, nil)
 	if err != nil {
 		return nil, err
@@ -478,6 +545,15 @@ type CalendarEvents []struct {
 
 // GetCalendarEvents gets the events of a calendar in Home Assistant.
 func (c *Client) GetCalendarEvents(
+	calendarID string,
+	start *time.Time,
+	end *time.Time,
+) (CalendarEvents, error) {
+	return c.GetCalendarEventsWithContext(c.ctx, calendarID, start, end)
+}
+
+// GetCalendarEventsWithContext gets the events of a calendar in Home Assistant.
+func (c *Client) GetCalendarEventsWithContext(
 	ctx context.Context,
 	calendarID string,
 	start *time.Time,
@@ -513,7 +589,16 @@ type UpsertStateRequest struct {
 
 // UpsertState updates or creates a state in Home Assistant.
 // Returns a state object and a URL of the new resource if one is created.
-func (c *Client) UpsertState(ctx context.Context, params UpsertStateRequest) (types.Entity, *url.URL, error) {
+func (c *Client) UpsertState(params UpsertStateRequest) (types.Entity, *url.URL, error) {
+	return c.UpsertStateWithContext(c.ctx, params)
+}
+
+// UpsertStateWithContext updates or creates a state in Home Assistant.
+// Returns a state object and a URL of the new resource if one is created.
+func (c *Client) UpsertStateWithContext(
+	ctx context.Context,
+	params UpsertStateRequest,
+) (types.Entity, *url.URL, error) {
 	req, err := c.newRequest(ctx, http.MethodPost, "states/"+params.EntityID, params)
 	if err != nil {
 		return types.Entity{}, nil, err
@@ -550,7 +635,13 @@ func (c *Client) UpsertState(ctx context.Context, params UpsertStateRequest) (ty
 
 // FireEvent fires an event in Home Assistant.
 // Returns a message if successful.
-func (c *Client) FireEvent(ctx context.Context, eventType string, eventData any) (string, error) {
+func (c *Client) FireEvent(eventType string, eventData any) (string, error) {
+	return c.FireEventWithContext(c.ctx, eventType, eventData)
+}
+
+// FireEventWithContext fires an event in Home Assistant.
+// Returns a message if successful.
+func (c *Client) FireEventWithContext(ctx context.Context, eventType string, eventData any) (string, error) {
 	req, err := c.newRequest(ctx, http.MethodPost, "events/"+eventType, eventData)
 	if err != nil {
 		return "", err
@@ -564,14 +655,23 @@ func (c *Client) FireEvent(ctx context.Context, eventType string, eventData any)
 	return resp.Message, nil
 }
 
-type CallServiceParams struct {
-	Domain  domains.Domain
-	Service string
+type CallServiceData struct {
+	EntityID string `json:"entity_id"`
 }
 
 // CallService calls a Home Assistant service via the REST API.
 // Returns a list of states that have changed while the service was being executed.
 func (c *Client) CallService(
+	domain domains.Domain,
+	service string,
+	data any,
+) ([]types.Entity, error) {
+	return c.CallServiceWithContext(c.ctx, domain, service, data)
+}
+
+// CallServiceWithContext calls a Home Assistant service via the REST API.
+// Returns a list of states that have changed while the service was being executed.
+func (c *Client) CallServiceWithContext(
 	ctx context.Context,
 	domain domains.Domain,
 	service string,
@@ -596,7 +696,12 @@ type Template struct {
 }
 
 // RenderTemplate renders a Home Assistant template.
-func (c *Client) RenderTemplate(ctx context.Context, template Template) (string, error) {
+func (c *Client) RenderTemplate(template Template) (string, error) {
+	return c.RenderTemplateWithContext(c.ctx, template)
+}
+
+// RenderTemplateWithContext renders a Home Assistant template.
+func (c *Client) RenderTemplateWithContext(ctx context.Context, template Template) (string, error) {
 	req, err := c.newRequest(ctx, http.MethodPost, "template", template)
 	if err != nil {
 		return "", err
@@ -629,7 +734,14 @@ type checkConfig struct {
 // CheckConfig checks the Home Assistant configuration.
 // If the checks is successful, nil will be returned.
 // If the check fails, a string containing the error will be returned.
-func (c *Client) CheckConfig(ctx context.Context) error {
+func (c *Client) CheckConfig() error {
+	return c.CheckConfigWithContext(c.ctx)
+}
+
+// CheckConfigWithContext checks the Home Assistant configuration.
+// If the checks is successful, nil will be returned.
+// If the check fails, a string containing the error will be returned.
+func (c *Client) CheckConfigWithContext(ctx context.Context) error {
 	req, err := c.newRequest(ctx, http.MethodPost, "config/core/check_config", nil)
 	if err != nil {
 		return err
@@ -649,7 +761,13 @@ func (c *Client) CheckConfig(ctx context.Context) error {
 
 // HandleIntent handles an intent in Home Assistant.
 // You must add intent: to your Home Assistant configuration file to enable this endpoint.
-func (c *Client) HandleIntent(ctx context.Context, intent any) error {
+func (c *Client) HandleIntent(intent any) error {
+	return c.HandleIntentWithContext(c.ctx, intent)
+}
+
+// HandleIntentWithContext handles an intent in Home Assistant.
+// You must add intent: to your Home Assistant configuration file to enable this endpoint.
+func (c *Client) HandleIntentWithContext(ctx context.Context, intent any) error {
 	req, err := c.newRequest(ctx, http.MethodPost, "services/intent/handle", intent)
 	if err != nil {
 		return err
@@ -666,6 +784,17 @@ func (c *Client) HandleIntent(ctx context.Context, intent any) error {
 // It writes events to the `events` channel and listens for a stop signal on `stop`.
 // Each event is sent as a string in JSON format.
 func (c *Client) EventStream(
+	events chan<- string,
+	stop <-chan struct{},
+	restrictions ...string,
+) error {
+	return c.EventStreamWithContext(c.ctx, events, stop, restrictions...)
+}
+
+// EventStreamWithContext connects to Home Assistant's event stream API and streams events.
+// It writes events to the `events` channel and listens for a stop signal on `stop`.
+// Each event is sent as a string in JSON format.
+func (c *Client) EventStreamWithContext(
 	ctx context.Context,
 	events chan<- string,
 	stop <-chan struct{},

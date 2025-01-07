@@ -4,10 +4,13 @@ package websocket
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/ryanjohnsontv/go-homeassistant/shared/version"
+)
+
+var (
+	ErrAuthFailed = errors.New("failed to authenticate")
 )
 
 type (
@@ -26,7 +29,7 @@ type (
 func (c *Client) authenticate() error {
 	var resp authResponse
 	if err := c.wsConn.ReadJSON(&resp); err != nil {
-		c.logger.Error("%s: %w", *resp.Message, err)
+		c.logger.Error(err, "%s", *resp.Message)
 		return err
 	}
 
@@ -43,7 +46,7 @@ func (c *Client) authenticate() error {
 			AccessToken: c.accessToken,
 		}
 		if err := c.wsConn.WriteJSON(request); err != nil {
-			c.logger.Error("error sending auth message. attempt %d: %w", i+1, err)
+			c.logger.Error(err, "error sending auth message. attempt %d", i+1)
 			time.Sleep(2 * time.Second)
 
 			continue
@@ -51,7 +54,7 @@ func (c *Client) authenticate() error {
 
 		var resp authResponse
 		if err := c.wsConn.ReadJSON(&resp); err != nil {
-			c.logger.Error("error reading auth message. attempt %d: %w", i+1, err)
+			c.logger.Error(err, "error reading auth message. attempt %d", i+1)
 			time.Sleep(2 * time.Second)
 
 			continue
@@ -64,12 +67,12 @@ func (c *Client) authenticate() error {
 		case messageTypeAuthInvalid:
 			return errors.New(*resp.Message)
 		default:
-			c.logger.Error("%s. attempt %d", resp.Type.String(), i+1)
+			c.logger.Error(nil, "%s. attempt %d", resp.Type.String(), i+1)
 			time.Sleep(2 * time.Second)
 
 			continue
 		}
 	}
 
-	return fmt.Errorf("failed to authenticate")
+	return ErrAuthFailed
 }

@@ -1,13 +1,11 @@
 package rest
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/ryanjohnsontv/go-homeassistant/shared/entity"
 	"github.com/ryanjohnsontv/go-homeassistant/shared/types"
 	"github.com/stretchr/testify/assert"
 )
@@ -43,7 +41,7 @@ func TestNewClient(t *testing.T) {
 	})
 
 	t.Run("Custom API Path", func(t *testing.T) {
-		client, err := NewClient("homeassistant.local", "test-token", WithCustomAPIPath("/custom/api/"))
+		client, err := NewClient("homeassistant.local", "test-token", WithAPIPath("/custom/api/"))
 		assert.NoError(t, err)
 		assert.NotNil(t, client)
 		assert.Equal(t, "http://homeassistant.local:8123/custom/api/", client.apiURL.String())
@@ -51,7 +49,7 @@ func TestNewClient(t *testing.T) {
 
 	t.Run("Custom HTTP Client", func(t *testing.T) {
 		customHTTPClient := &http.Client{}
-		client, err := NewClient("homeassistant.local", "test-token", WithCustomHTTPClient(customHTTPClient))
+		client, err := NewClient("homeassistant.local", "test-token", WithHTTPClient(customHTTPClient))
 		assert.NoError(t, err)
 		assert.NotNil(t, client)
 		assert.Equal(t, customHTTPClient, client.httpClient)
@@ -71,7 +69,6 @@ func TestNewClient(t *testing.T) {
 }
 
 func TestClient(t *testing.T) {
-	ctx := context.Background()
 	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"message": "API running."}`))
@@ -82,7 +79,7 @@ func TestClient(t *testing.T) {
 	assert.NoError(t, err)
 
 	t.Run("GetHealth", func(t *testing.T) {
-		err := client.GetHealth(ctx)
+		err := client.GetHealth()
 		assert.NoError(t, err)
 	})
 
@@ -92,7 +89,7 @@ func TestClient(t *testing.T) {
 			w.Write([]byte(`{"message": "Internal Server Error"}`))
 		})
 
-		err := client.GetHealth(ctx)
+		err := client.GetHealth()
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "Internal Server Error")
 	})
@@ -108,7 +105,7 @@ func TestClient(t *testing.T) {
 			json.NewEncoder(w).Encode(config)
 		})
 
-		config, err := client.GetConfig(ctx)
+		config, err := client.GetConfig()
 		assert.NoError(t, err)
 		assert.Contains(t, config.Components, "http")
 		assert.Equal(t, 51.509865, config.Latitude)
@@ -125,7 +122,7 @@ func TestClient(t *testing.T) {
 			json.NewEncoder(w).Encode(events)
 		})
 
-		events, err := client.GetEvents(ctx)
+		events, err := client.GetEvents()
 		assert.NoError(t, err)
 		assert.Len(t, events, 2)
 		assert.Equal(t, "state_changed", events[0].Event)
@@ -133,19 +130,14 @@ func TestClient(t *testing.T) {
 	})
 
 	t.Run("GetStates", func(t *testing.T) {
-		entity1, err := entity.Parse("light.kitchen")
-		assert.NoError(t, err)
-		entity2, err := entity.Parse("sensor.temperature")
-		assert.NoError(t, err)
-
 		testServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			states := []types.Entity{
 				{
-					EntityID: entity1,
+					EntityID: "light.kitchen",
 					State:    "on",
 				},
 				{
-					EntityID: entity2,
+					EntityID: "sensor.temperature",
 					State:    "23.5",
 				},
 			}
@@ -153,10 +145,10 @@ func TestClient(t *testing.T) {
 			json.NewEncoder(w).Encode(states)
 		})
 
-		states, err := client.GetStates(ctx)
+		states, err := client.GetStates()
 		assert.NoError(t, err)
 		assert.Len(t, states, 2)
-		assert.Equal(t, entity1, states[0].EntityID)
-		assert.Equal(t, "on", states[0].State)
+		assert.Equal(t, "light.kitchen", states[0].EntityID)
+		assert.Equal(t, "on", states[0].State.String())
 	})
 }

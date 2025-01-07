@@ -24,23 +24,21 @@ func (s Value) String() string {
 	return string(s)
 }
 
-// AsString returns the state as a json.Number.
+// AsNumber returns the state as a json.Number.
 func (s Value) AsNumber() json.Number {
 	return json.Number(s)
 }
 
 // AsBool attempts to interpret the state as a boolean.
 // It supports common values like "on"/"off", "true"/"false", "locked"/"unlocked".
-func (s Value) AsBool() (*bool, error) {
+func (s Value) AsBool() (bool, error) {
 	switch string(s) {
 	case "on", "true", "locked", "open":
-		val := true
-		return &val, nil
+		return true, nil
 	case "off", "false", "unlocked", "closed":
-		val := false
-		return &val, nil
+		return false, nil
 	default:
-		return nil, fmt.Errorf("state is not a boolean: %s", s)
+		return false, fmt.Errorf("state is not a boolean: %s", s)
 	}
 }
 

@@ -3,10 +3,11 @@ package websocket
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/ryanjohnsontv/go-homeassistant/shared/types"
+	"github.com/tidwall/gjson"
 )
 
 // Lock and increment ID used in all messages sent to Home Assistant
@@ -21,11 +22,9 @@ func (c *Client) getNextID() int64 {
 
 // Dial and configure websocket connection
 func (c *Client) connect() error {
-	dialer := websocket.DefaultDialer
-
-	conn, resp, err := dialer.Dial(c.wsURL, nil)
+	conn, resp, err := c.dialer.Dial(c.wsURL.String(), nil)
 	if err != nil {
-		c.logger.Error("unable to dial home assistant: %w", err)
+		c.logger.Error(err, "unable to dial home assistant")
 		resp.Body.Close()
 	}
 
@@ -53,7 +52,7 @@ func (c *Client) listen() {
 		default:
 			_, msg, err := c.wsConn.ReadMessage()
 			if err != nil {
-				c.logger.Error("error reading message: %w", err)
+				c.logger.Error(err, "error reading message")
 				c.reconnectChan <- true
 
 				break
@@ -71,7 +70,7 @@ func (c *Client) parseIncomingMessage(msg []byte) {
 
 	var m incomingMsg
 	if err := json.Unmarshal(msg, &m); err != nil {
-		c.logger.Error("error unmarshaling message: %w", err)
+		c.logger.Error(err, "error unmarshaling message")
 	}
 
 	c.logger.Debug("received message: %s", string(msg))
@@ -89,24 +88,133 @@ func (c *Client) parseIncomingMessage(msg []byte) {
 }
 
 // Handle type: event messages to determine if a callback function needs to be called.
-func (c *Client) eventResponseHandler(id int64, msg []byte) {
-	if handler, exists := c.eventHandler[id]; exists {
-		var response struct {
-			Event types.Event `json:"event"`
-		}
+func (c *Client) eventResponseHandler(id int64, rawMessage []byte) {
+	go c.updateState(rawMessage)
 
-		if err := json.Unmarshal(msg, &response); err != nil {
-			c.logger.Error("error unmarshalling event message: %w", err)
-		}
+	go func() {
+		if handler, exists := c.customEventHandler[id]; exists {
+			if handler.eventType == nil {
+				handler.callback(nil)
+				return
+			}
 
-		if handler.Callback != nil {
-			go handler.Callback(response.Event)
-		}
+			event := reflect.New(handler.eventType).Interface()
 
-		if response.Event.EventType == "state_changed" {
-			go c.updateState(response.Event.Data)
-			return
+			if err := json.Unmarshal(rawMessage, event); err != nil {
+				c.logger.Error(err, "error unmarshalling custom event message")
+				return
+			}
+
+			handler.callback(event)
 		}
+	}()
+
+	go func() {
+		if callback, exists := c.eventHandler[id]; exists && callback != nil {
+			var eventMessage struct {
+				Event types.Event `json:"event"`
+			}
+
+			if err := json.Unmarshal(rawMessage, &eventMessage); err != nil {
+				c.logger.Error(err, "error unmarshalling generic event message")
+				return
+			}
+
+			// Trigger the generic event callback
+			callback(eventMessage.Event)
+		}
+	}()
+}
+
+func (c *Client) updateState(rawMessage []byte) {
+	if gjson.GetBytes(rawMessage, "event_type").Str != "state_changed" {
+		return
+	}
+
+	data := gjson.GetBytes(rawMessage, "data")
+	if !data.Exists() {
+		c.logger.Warn("state_changed event missing data field: %s", string(rawMessage))
+		return
+	}
+
+	var sc types.StateChange
+	if err := json.Unmarshal([]byte(data.Str), &sc); err != nil {
+		c.logger.Error(err, "error decoding state change: %s, error: %v", data.Raw, err)
+		return
+	}
+
+	// Update EntitiesMap with the new state
+	c.mu.Lock()
+	c.EntitiesMap[sc.EntityID] = *sc.NewState
+
+	customPointers := c.customEntityPointers[sc.EntityID]
+	customCallbacks := c.customEntityListeners[sc.EntityID]
+	customType := c.customEntityTypes[sc.EntityID]
+	c.mu.Unlock()
+
+	// Custom Unmarshalling for Registered Pointers
+	go c.handleCustomPointers(rawMessage, customPointers)
+
+	// Custom Callbacks
+	if len(customCallbacks) > 0 {
+		if customType != nil {
+			go c.customEntityListenersCallback(rawMessage, customType, customCallbacks)
+		} else {
+			c.logger.Warn("no custom entity provided, using generic entity")
+			go c.triggerCustomEntityListenerCallback(sc.OldState, sc.NewState, customCallbacks)
+		}
+	}
+
+	go c.entityIDCallbackTrigger(&sc)
+	go c.regexCallbackTrigger(&sc)
+	go c.domainCallbackTrigger(&sc)
+	go c.substringCallbackTrigger(&sc)
+}
+
+func (c *Client) handleCustomPointers(rawMessage []byte, pointers []any) {
+	for _, customPointer := range pointers {
+		if err := c.unmarshalFromMessage(rawMessage, "event.data.new_state", customPointer); err != nil {
+			c.logger.Error(err, "custom unmarshal failed")
+		}
+	}
+}
+
+func (c *Client) customEntityListenersCallback(rawMessage []byte, customType reflect.Type, els []customEntityListener) {
+	oldState := reflect.New(customType).Interface()
+	newState := reflect.New(customType).Interface()
+
+	if err := c.unmarshalFromMessage(rawMessage, "old_state", oldState); err != nil {
+		c.logger.Error(err, "error unmarshalling old_state")
+	}
+
+	if err := c.unmarshalFromMessage(rawMessage, "new_state", newState); err != nil {
+		c.logger.Error(err, "error unmarshalling new_state")
+	}
+
+	c.triggerCustomEntityListenerCallback(oldState, newState, els)
+}
+
+func (c *Client) unmarshalFromMessage(rawMessage []byte, path string, pointer any) error {
+	result := gjson.GetBytes(rawMessage, path)
+	if !result.Exists() {
+		return fmt.Errorf("path %s does not exist in message", path)
+	}
+
+	if err := json.Unmarshal([]byte(result.Raw), pointer); err != nil {
+		return fmt.Errorf("error unmarshalling %s for %s: %v", path, result.Str, err)
+	}
+
+	c.logger.Info("successfully unmarshalled %s for %s", path, result.Str)
+
+	return nil
+}
+
+func (c *Client) triggerCustomEntityListenerCallback(oldState, newState any, els []customEntityListener) {
+	for _, el := range els {
+		go func(el customEntityListener) {
+			el.callback(oldState, newState)
+			c.logger.Debug("executed custom callback for entity")
+		}(el)
 	}
 }
 
@@ -123,7 +231,7 @@ func (c *Client) startHeartbeat() {
 		select {
 		case <-ticker.C:
 			if err := c.sendPing(); err != nil {
-				c.logger.Error("error sending ping: %w", err)
+				c.logger.Error(err, "error sending ping")
 			}
 
 			timeout := time.NewTimer(c.timeout)
@@ -137,7 +245,7 @@ func (c *Client) startHeartbeat() {
 				c.logger.Warn("ping timeout #%d", consecutiveTimeouts)
 
 				if consecutiveTimeouts >= maxTimeouts {
-					c.logger.Error("ping failed after %d timeouts, reconnecting", maxTimeouts)
+					c.logger.Error(nil, "ping failed after %d timeouts, reconnecting", maxTimeouts)
 					c.reconnectChan <- true
 
 					return
@@ -152,7 +260,7 @@ func (c *Client) startHeartbeat() {
 			var attempt int
 
 			for {
-				if err := c.run(); err == nil {
+				if err := c.Run(); err == nil {
 					attempt++
 					c.logger.Info("reconnect failed, trying again. attempt %d", attempt)
 					time.Sleep(5 * time.Second)
@@ -170,7 +278,7 @@ func (c *Client) sendPing() error {
 	msg.SetID(id)
 
 	if err := c.wsConn.WriteJSON(&msg); err != nil {
-		return fmt.Errorf("error sending ping: %w", err)
+		return fmt.Errorf("error sending ping")
 	}
 
 	return nil
