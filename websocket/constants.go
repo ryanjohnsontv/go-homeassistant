@@ -1,44 +1,5 @@
 package websocket
 
-import (
-	"encoding/json"
-)
-
-type (
-	cmdMessage interface {
-		SetID(id int64)
-	}
-	baseMessage struct {
-		ID   int64       `json:"id"`
-		Type messageType `json:"type"`
-	}
-)
-
-func (b *baseMessage) SetID(id int64) {
-	b.ID = id
-}
-
-type messageType string
-
-func (mt messageType) String() string {
-	return string(mt)
-}
-
-func (mt *messageType) MarshalJSON() ([]byte, error) {
-	return json.Marshal(mt.String())
-}
-
-func (mt *messageType) UnmarshalJSON(data []byte) error {
-	var str string
-	if err := json.Unmarshal(data, &str); err != nil {
-		return err
-	}
-
-	*mt = messageType(str)
-
-	return nil
-}
-
 // Auth
 const (
 	messageTypeAuth         messageType = "auth"

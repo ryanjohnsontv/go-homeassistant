@@ -44,20 +44,34 @@ package main
 
 import (
     "fmt"
+    "log"
+    "os"
+    "time"
+    
+    "github.com/joho/godotenv"
     "github.com/ryanjohnsontv/go-homeassistant/rest"
 )
 
 func main() {
-    client, err := rest.NewClient("http://homeassistant.local:8123", "your-access-token")
+    err := godotenv.Load()
     if err != nil {
-        return
+        log.Fatal("Error loading .env file", err)
     }
-    response, err := client.GetState("light.living_room")
+
+    client, err := rest.NewClient(os.Getenv("HA_HOST"), os.Getenv("HA_TOKEN"))
     if err != nil {
-        fmt.Println(err)
-        return
+        log.Fatal(err)
+    }
+
+    state, err := client.GetState("light.living_room")
+    if err != nil {
+        log.Fatal(err)
     }
     fmt.Println("Light state:", response)
+
+    if _, err := client.CallService(domains.Light, "toggle", nil); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
 
@@ -71,19 +85,41 @@ The WebSocket client supports real-time communication with Home Assistant.
 package main
 
 import (
-    "fmt"
+    "log"
+    "os"
+    "time"
+
+    "github.com/joho/godotenv"
+    "github.com/ryanjohnsontv/go-homeassistant/shared/actions/light"
     "github.com/ryanjohnsontv/go-homeassistant/websocket"
 )
 
 func main() {
-    client, err := websocket.NewClient("ws://homeassistant.local:8123/api/websocket", "your-access-token")
+    err := godotenv.Load()
     if err != nil {
-        fmt.Println("Error connecting to WebSocket:", err)
-        return
+        log.Fatal("Error loading .env file", err)
     }
 
-    fmt.Printf("States: %+v", client.States)
-    return nil
+    client, err := websocket.NewClient(os.Getenv("HA_HOST"), os.Getenv("HA_TOKEN"))
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    if err := client.Run(); err != nil {
+        return err
+    }
+
+    client.Actions.Light.TurnOn().Entities("light.guest_bedroom_floor_lamp").ServiceData(light.TurnOnData{
+        Transition:    5,
+        ColorName:     "red",
+        BrightnessPct: 100,
+    }).Execute()
+
+    time.Sleep(15 * time.Second)
+
+    client.Actions.Light.TurnOff().Entities("light.guest_bedroom_floor_lamp").Execute()
+
+    time.Sleep(15 * time.Second)
 }
 ```
 
@@ -93,22 +129,12 @@ func main() {
 
 - Go 1.23+
 
-### Build and Run
-
-```bash
-# Build the project
-make build
-
-# Run tests
-make test
-```
-
 ### Linting
 
 Lint the project using the configuration in `.golangci.yml`:
 
 ```bash
-golangci-lint run
+make lint
 ```
 
 ## Contributing

@@ -3,10 +3,47 @@ package websocket
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"time"
 
+	"github.com/ryanjohnsontv/go-homeassistant/shared/constants/domains"
 	"github.com/ryanjohnsontv/go-homeassistant/shared/types"
 )
+
+type (
+	cmdMessage interface {
+		SetID(id int64)
+	}
+	baseMessage struct {
+		ID   int64       `json:"id"`
+		Type messageType `json:"type"`
+	}
+)
+
+func (b *baseMessage) SetID(id int64) {
+	b.ID = id
+}
+
+type messageType string
+
+func (mt messageType) String() string {
+	return string(mt)
+}
+
+func (mt messageType) MarshalJSON() ([]byte, error) {
+	return json.Marshal(mt.String())
+}
+
+func (mt *messageType) UnmarshalJSON(serviceData []byte) error {
+	var str string
+	if err := json.Unmarshal(serviceData, &str); err != nil {
+		return err
+	}
+
+	*mt = messageType(str)
+
+	return nil
+}
 
 type subscribeToEventRequest struct {
 	baseMessage
@@ -22,16 +59,40 @@ func (c *Client) SubscribeToEvent(eventType string, f func(types.Event)) error {
 	}
 
 	if err := c.write(&request, nil); err != nil {
-		c.logger.Error("failed to subscribe to event: %w", err)
+		c.logger.Error(err, "failed to subscribe to event")
 		return err
 	}
 
 	c.mu.Lock()
-	c.eventHandler[request.ID] = eventHandler{
+	defer c.mu.Unlock()
+
+	c.eventHandler[request.ID] = f
+
+	c.logger.Info("subscribed to %s", eventType)
+
+	return nil
+}
+
+func (c *Client) SubscribeToCustomEvent(eventType string, eventData any, f func(any)) error {
+	request := subscribeToEventRequest{
+		baseMessage: baseMessage{
+			Type: messageTypeSubscribeEvent,
+		},
 		EventType: eventType,
-		Callback:  f,
 	}
-	c.mu.Unlock()
+
+	if err := c.write(&request, nil); err != nil {
+		c.logger.Error(err, "failed to subscribe to event")
+		return err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.customEventHandler[request.ID] = customEventHandler{
+		callback:  f,
+		eventType: reflect.TypeOf(eventData),
+	}
 
 	c.logger.Info("subscribed to %s", eventType)
 
@@ -52,13 +113,14 @@ func (c *Client) SubscribeToTrigger(trigger any, f func(types.Trigger)) error {
 	}
 
 	if err := c.write(&request, nil); err != nil {
-		c.logger.Error("failed to subscribe to trigger: %w", err)
+		c.logger.Error(err, "failed to subscribe to trigger")
 		return err
 	}
 
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	c.triggerHandler[request.ID] = append(c.triggerHandler[request.ID], triggerHandler{Callback: f})
-	c.mu.Unlock()
 
 	c.logger.Info("subscribed to trigger: %+v", trigger)
 
@@ -82,7 +144,7 @@ func (c *Client) FireEvent(eventType string, eventData any) (types.Context, erro
 
 	var response types.Context
 	if err := c.write(&request, &response); err != nil {
-		c.logger.Error("failed to fire event: %w", err)
+		c.logger.Error(err, "failed to fire event")
 		return response, err
 	}
 
@@ -91,41 +153,65 @@ func (c *Client) FireEvent(eventType string, eventData any) (types.Context, erro
 	return response, nil
 }
 
-type CallServiceParams struct {
-	Domain      string
-	Service     string
-	ServiceData any
-	Target      types.ServiceTarget
-}
-
 type callServiceMessage struct {
 	baseMessage
-	Domain      string              `json:"domain"`
+	Domain      domains.Domain      `json:"domain"`
 	Service     string              `json:"service"`
 	ServiceData any                 `json:"service_data,omitempty"`
 	Target      types.ServiceTarget `json:"target,omitempty"`
 }
 
-func (c *Client) CallService(params CallServiceParams) (types.Context, error) {
+func (c *Client) CallService(
+	domain domains.Domain,
+	service string,
+	serviceData any,
+	target types.ServiceTarget,
+) (types.Context, error) {
 	request := callServiceMessage{
 		baseMessage: baseMessage{
 			Type: messageTypeCallService,
 		},
-		Domain:      params.Domain,
-		Service:     params.Service,
-		ServiceData: params.ServiceData,
-		Target:      params.Target,
+		Domain:      domain,
+		Service:     service,
+		ServiceData: serviceData,
+		Target:      target,
 	}
 
 	var response types.Context
 	if err := c.write(&request, &response); err != nil {
-		c.logger.Error("failed to call service: %w", err)
+		c.logger.Error(err, "failed to call service")
 		return response, err
 	}
 
-	c.logger.Info("called %s.%s", params.Domain, params.Service)
+	c.logger.Info("calling %s.%s with target %+v and serviceData %+v\n", domain, service, target, serviceData)
 
 	return response, nil
+}
+
+func (c *Client) CallServiceHelper(
+	domain domains.Domain,
+	service string,
+	serviceData any,
+	target types.ServiceTarget,
+) error {
+	request := callServiceMessage{
+		baseMessage: baseMessage{
+			Type: messageTypeCallService,
+		},
+		Domain:      domain,
+		Service:     service,
+		ServiceData: serviceData,
+		Target:      target,
+	}
+
+	if err := c.write(&request, nil); err != nil {
+		c.logger.Error(err, "failed to call service")
+		return err
+	}
+
+	c.logger.Info("calling %s.%s with target %+v and serviceData %+v\n", domain, service, target, serviceData)
+
+	return nil
 }
 
 func (c *Client) GetStates() (types.EntitiesMap, error) {
@@ -135,11 +221,11 @@ func (c *Client) GetStates() (types.EntitiesMap, error) {
 
 	var response types.Entities
 	if err := c.write(&request, &response); err != nil {
-		c.logger.Error("failed to get states: %s", err.Error())
+		c.logger.Error(err, "failed to get states")
 		return nil, err
 	}
 
-	c.EntitiesMap = response.SortStates()
+	c.EntitiesMap = response.ToMap()
 	c.logger.Info("states retrieved")
 
 	return c.EntitiesMap, nil
@@ -152,7 +238,7 @@ func (c *Client) GetConfig() (types.Config, error) {
 
 	var response types.Config
 	if err := c.write(&request, &response); err != nil {
-		c.logger.Error("failed to get config: %w", err)
+		c.logger.Error(err, "failed to get config")
 		return types.Config{}, err
 	}
 
@@ -168,7 +254,7 @@ func (c *Client) GetServices() (types.Services, error) {
 
 	var response types.Services
 	if err := c.write(&request, &response); err != nil {
-		c.logger.Error("failed to get services: %w", err)
+		c.logger.Error(err, "failed to get services")
 		return nil, err
 	}
 
@@ -184,7 +270,7 @@ func (c *Client) GetPanels() (types.Panels, error) {
 
 	var response types.Panels
 	if err := c.write(&request, &response, skipHistory()); err != nil {
-		c.logger.Error("failed to get panels: %w", err)
+		c.logger.Error(err, "failed to get panels")
 		return nil, err
 	}
 
@@ -250,8 +336,7 @@ func (c *Client) write(request cmdMessage, result any, options ...writeOption) e
 	}()
 
 	if err := c.wsConn.WriteJSON(request); err != nil {
-		// c.reconnectChan <- true
-		c.logger.Error("error sending message: %v", request)
+		c.logger.Error(err, "error sending message: %+v", request)
 		return fmt.Errorf("error sending message: %v\nerror: %w", request, err)
 	}
 
@@ -259,18 +344,18 @@ func (c *Client) write(request cmdMessage, result any, options ...writeOption) e
 	case message := <-responseChan:
 		var response resultResponse
 		if err := json.Unmarshal(message, &response); err != nil {
-			c.logger.Error("failed to unmarshal response: %w", err)
+			c.logger.Error(err, "failed to unmarshal response")
 			return err
 		}
 
 		if !response.Success {
-			c.logger.Error("command failed. %s", response.Error.Error())
+			c.logger.Error(response.Error, "command failed")
 			return response.Error
 		}
 
 		if result != nil {
 			if err := json.Unmarshal(response.Result, result); err != nil {
-				c.logger.Error("failed to unmarshal result: %w", err)
+				c.logger.Error(err, "failed to unmarshal result")
 				return err
 			}
 		}
@@ -278,7 +363,9 @@ func (c *Client) write(request cmdMessage, result any, options ...writeOption) e
 		return nil
 
 	case <-time.After(c.timeout):
-		c.logger.Error("response timeout for request ID: %d", id)
-		return fmt.Errorf("response timeout for request ID: %d", id)
+		err := fmt.Errorf("response timeout for request ID: %d", id)
+		c.logger.Error(err, "")
+
+		return err
 	}
 }
